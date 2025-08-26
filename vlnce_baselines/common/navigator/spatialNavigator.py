@@ -1,8 +1,9 @@
-import re
+import re   # 正则表达式
 import random
 from vlnce_baselines.common.navigator.api import *
 from vlnce_baselines.common.navigator.prompts import *
 
+# 终于找到Open_Nav类，是导航的核心
 class Open_Nav():
     def __init__(self, device, llm_type, api_key):
         self.device = device
@@ -16,6 +17,7 @@ class Open_Nav():
         return self.llm.gpt_infer(ACTION_DETECTION['system'], ACTION_DETECTION['user'].format(instruction))
 
     def get_landmarks(self, actions):
+        # 替换“换行”为“空格”，将多行动作文本合并为一行，方便处理
         actions = actions.replace("\n", " ")
         return self.llm.gpt_infer(LANDMARK_DETECTION['system'], LANDMARK_DETECTION['user'].format(actions))
     
