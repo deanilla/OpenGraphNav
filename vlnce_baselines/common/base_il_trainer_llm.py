@@ -255,20 +255,26 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         Returns:
             None
         """
+        # 1. 克隆配置以避免修改原始配置
         config = self.config.clone()
 
-
+        # 2. 解冻配置以便修改
         config.defrost()
+        # 禁用数据集打乱，确保评估的一致性
         config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.SHUFFLE = False
+        # 允许场景重复，不限制重复步数
         config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS = (
             -1
-        )
+        )   # TODO：括号换行是多余的
+        # 3. 如果需要生成视频，添加额外的测量项（如地图、碰撞）
         if len(config.VIDEO_OPTION) > 0:
-            config.defrost()
+            config.defrost()    # TODO：这行是多余的，因为上面已经解冻了
             config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP_VLNCE")
             config.TASK_CONFIG.TASK.MEASUREMENTS.append("COLLISIONS")
+        # 4. 重新冻结配置
         config.freeze()
-
+        
+        # 5. 检查是否已存在评估结果文件，避免重复计算
         if config.EVAL.SAVE_RESULTS:
             fname = os.path.join(
                 config.RESULTS_DIR,
@@ -276,6 +282,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
             )
             if os.path.exists(fname):
                 print(f"skipping -- evaluation exists. File path: {fname}")
+                # 询问用户是否覆盖
                 user_input = input("Do you want to overwrite the results? (yes/no): ").strip().lower()
                 if user_input != "yes":
                     print("Skipping evaluation.")
@@ -283,7 +290,10 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                 else:
                     print("Overwriting previous results...")
                 
-
+        # 6. 构建评估环境
+        #    - 使用配置和环境类创建环境
+        #    - auto_reset_done=False: 环境不会在episode结束时自动重置，由代码手动控制
+        #    - episodes_allowed=self.traj: 只评估指定的episode（通过collect_val_traj获取）
         envs = construct_envs(
             config, get_env_class(config.ENV_NAME),
             auto_reset_done=False,
@@ -291,46 +301,63 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         ) 
 
         #envs.number_of_episodes = [1] # set the number of episodes
+
+        # 7. 计算数据集总长度（所有环境中的episode数之和）
         dataset_length = sum(envs.number_of_episodes) 
         print('local rank:', self.local_rank, '|', 'dataset length:', dataset_length)
 
+        # 8. 获取并应用观测变换（如图像大小调整）
         obs_transforms = get_active_obs_transforms(config) 
         observation_space = apply_obs_transforms_obs_space(
             envs.observation_spaces[0], obs_transforms
         )
+
+        # 9. 初始化策略网络和航点预测器
+        #    - load_from_ckpt=False: 不从检查点加载（因为是零样本推理）
+        #    - observation_space, action_space: 用于构建网络
         self._initialize_policy(
             config,
             load_from_ckpt=False,
             observation_space=observation_space,
             action_space=envs.action_spaces[0],
         )
+
+        # 10. 将模型设置为评估模式（关闭dropout, batchnorm更新等）
         self.policy.eval() 
         self.waypoint_predictor.eval()
+
+        # 11. 重置环境，获取初始观测
         observations = envs.reset()
         
+        # 12. 生成输入图像（可能用于调试或外部模型）并提取指令token
         instruction, images_list = self.generate_input(observations[-1])
         observations = extract_instruction_tokens(
             observations, self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID
         ) 
+        # 13. 将观测打包成批次，并应用观测变换
         batch = batch_obs(observations, self.device) 
         batch = apply_obs_transforms_batch(batch, obs_transforms) 
 
+        # 14. 初始化未完成掩码（用于并行环境管理）
         not_done_masks = torch.zeros(
             envs.num_envs, 1, dtype=torch.uint8, device=self.device
         ) 
 
-        stats_episodes = {}
-        rgb_frames = [[] for _ in range(envs.num_envs)]
+        # 15. 初始化用于存储统计信息的字典和视频帧缓冲区
+        stats_episodes = {} # 存储每个episode的评估指标
+        rgb_frames = [[] for _ in range(envs.num_envs)] # 存储每个环境的视频帧
         if len(config.VIDEO_OPTION) > 0:
-            os.makedirs(config.VIDEO_DIR, exist_ok=True)
+            os.makedirs(config.VIDEO_DIR, exist_ok=True)    # 创建视频目录
 
+        # 16. 确定要评估的episode数量
         if config.EVAL.EPISODE_COUNT == -1:
-            episodes_to_eval = sum(envs.number_of_episodes)
+            episodes_to_eval = sum(envs.number_of_episodes)  # 评估所有
         else:
             episodes_to_eval = min(
-                config.EVAL.EPISODE_COUNT, sum(envs.number_of_episodes)
+                config.EVAL.EPISODE_COUNT, sum(envs.number_of_episodes)  # 评估指定数量
             )
 
+        # 17. 初始化进度条和日志字符串
         pbar = tqdm.tqdm(total=episodes_to_eval) if config.use_pbar else None
         log_str = (
             " [Episodes evaluated: {evaluated}/{total}]"
@@ -338,9 +365,10 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         )
         start_time = time.time()
 
+        # 18. 设置日志记录器
         # set up the logger
         log_file = "./navigator_log.log"
-        if os.path.exists(log_file): os.remove(log_file)
+        if os.path.exists(log_file): os.remove(log_file)    # 清除旧日志
         import logging
         logging.basicConfig(
             format='%(asctime)s - %(filename)s/%(funcName)s[line:%(lineno)d] - %(levelname)s: %(message)s',
@@ -349,9 +377,10 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
             stream=sys.stdout,
             filemode="a"
         )
-        nav_logger = logging.getLogger("vln_logger")
-        nav_logger.addHandler(logging.FileHandler(filename=log_file))
+        nav_logger = logging.getLogger("vln_logger")     # 创建专门的导航日志记录器
+        nav_logger.addHandler(logging.FileHandler(filename=log_file))   # 添加文件处理器
         
+        # 19. 设置动作缓存（避免对相同指令重复调用LLM）
         dataset_name = "R2R"
         if not os.path.exists(f"cache_files/{dataset_name}"):
             os.makedirs(f"cache_files/{dataset_name}")
@@ -363,10 +392,14 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         else:
             actions_cache = {} 
         
+        # 20. 初始化核心导航器（Open_Nav类实例）
+        #     这是执行Spatial-Temporal CoT推理的地方
         navigator = Open_Nav(self.device,config.LLM, config.API_KEY)
         current_step = 0
         nav_history = []
         error_number = 0
+
+        # 21. 主评估循环：只要还有环境在运行且未达到评估数量上限
         while envs.num_envs > 0 and len(stats_episodes) < episodes_to_eval:
             current_episodes = envs.current_episodes()
             positions = []; headings = []
@@ -375,13 +408,19 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                         "get_agent_info", {})
                 positions.append(agent_state_i['position'])
                 headings.append(agent_state_i['heading'])
+
             # ==========Navigator start==========
+            # 21.2 记录当前episode ID和指令到日志
             nav_logger.info(f"==================== The current episode id is {current_episodes[0].episode_id} ====================")
             nav_logger.info("Instruction: "+instruction)
+
+            # 21.3 从缓存获取或通过LLM生成动作序列和地标
             actions, landmarks = "", ""
             if instruction not in actions_cache.keys():
+                # 调用 Open_Nav 的方法，内部会调用LLM进行推理
                 actions = navigator.get_actions(instruction)
                 landmarks = navigator.get_landmarks(actions)
+                # 缓存结果
                 actions_cache[instruction] = {"actions": actions, "landmarks": landmarks}
                 with open(actions_cache_path, "w", encoding="utf-8") as f2:
                     json.dump(actions_cache, f2, indent=2)
@@ -391,12 +430,15 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
             nav_logger.info("Actions: "+actions)
             nav_logger.info("Landmarks: " + landmarks)
             
+            # 21.4 根据动作序列长度确定导航步数上限
             step_length = 6 if len(actions.split("\n")) <= 6 else 8 
 
-            stop_flag = False
+            stop_flag = False   # 停止标志（代码中似乎未被设置为True）
             current_step += 1
             nav_logger.info(f"-------------------- Step {current_step} --------------------")
-            with torch.no_grad():
+
+            # 21.5 预测候选航点
+            with torch.no_grad():   # 禁用梯度计算，因为是推理阶段
                 # candidate waypoints prediction
                 cand_rgb, cand_depth, \
                 cand_direction, cand_mask, candidate_lengths, \
@@ -407,49 +449,67 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     in_train = False,
                 )
             
+            # 21.6 构建航点图像字典（供后续LLM推理使用）
             images_dict, radius_dict, distance_dict = self.construct_image_dicts(batch_distances[-1], batch_angles, images_list)
+
+            # 21.7 调用 Open_Nav 进行环境观察（可能涉及外部模型如RAM/SpatialBot）
             nav_logger.info("========== Get Observation ==========")
             observation, observe_dict = navigator.observe_environment(nav_logger, current_step, images_dict)
             
+            # 21.8 调用 Open_Nav 回顾导航历史
             nav_logger.info("========== Review History ==========")
             history_traj = navigator.review_history(nav_logger, nav_history) if len(nav_history) > 0 else "Step 0 start position. "
 
+            # 21.9 如果未停止，执行完整的Spatial-Temporal CoT推理链
             if not stop_flag:
+                # 21.9.1 估计完成进度
                 nav_logger.info("========== Estimate Completion Progress ==========")
                 estimation = navigator.estimate_completion(nav_logger, actions, landmarks, history_traj)
                 
+                # 21.9.2 预测下一步动作
                 nav_logger.info("========== Next Action Prediction ==========")
                 predictions, thoughts, break_flag = navigator.move_to_next_vp(nav_logger, current_step, instruction, actions, landmarks, history_traj, estimation, observation, observe_dict)
 
+                # 21.9.3 融合预测和思考
                 nav_logger.info("========== Thought ==========")
                 fused_pred_thought = navigator.thought_fusion(nav_logger, predictions, thoughts)
                 
+                # 21.9.4 最终决策（选择一个航点）
                 nav_logger.info("========== Test Decision ==========")
                 next_vp, thought, error_number = navigator.test_decisions(nav_logger, fused_pred_thought, observation, instruction, error_number, observe_dict)
-           
+            
+            # 22. 尝试执行动作并处理结果           
             try:
                 if not stop_flag:
+                    # 22.1 构建环境动作（移动到指定航点）
                     env_actions = []
                     env_actions.append({'action':
-                        {'action': 4,
+                        {'action': 4,   # TODO：4？
                         'action_args':{
-                            'angle': radius_dict[next_vp],
-                            'distance': distance_dict[next_vp],
+                            'angle': radius_dict[next_vp],  # 航点的角度
+                            'distance': distance_dict[next_vp], # 航点的距离
                         }}})
                     nav_logger.info(f"The final env action: {env_actions}")
+
+                    # 22.2 在环境中执行动作
                     outputs = envs.step(env_actions)
                     
+                    # 22.3 保存当前步骤的历史信息
                     curr_observe = observe_dict[next_vp]
                     nav_logger.info("========== save history ==========")
                     nav_history = navigator.save_history(nav_logger, current_step, next_vp, thought, curr_observe, nav_history)
                 
+                    # 22.4 获取新观测，并重置错误计数
                     observations, _, dones, infos = [list(x) for x in zip(*outputs)]
                     instruction, images_list = self.generate_input(observations[-1])
                     error_number = 0 
+
+                    # 22.5 检查是否达到步数上限，若是则标记为完成，并结束导航
                     # finish navigation
                     if current_step == step_length:
                         dones[0] = True 
                     else:
+                        # 22.6 否则更新环境内部路径信息（用于评估指标计算）
                         for j, ob in enumerate(observations):
                             envs.call_at(j, 
                                 'change_current_path',
@@ -457,50 +517,65 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                                 'collisions': ob.pop('collisions')}
                             )
                 else:
+                    # 如果stop_flag为True，则直接标记为完成（但代码中stop_flag似乎始终为False）
                     dones[0] = True
                 
+                # 22.7 更新未完成掩码
                 not_done_masks = torch.tensor(
                     [[0] if done else [1] for done in dones],
                     dtype=torch.uint8, device=self.device)
                 
+                # 23. 遍历每个环境，处理已完成的episode
                 for i in range(envs.num_envs):
                     
                     if not dones[i]:
                         continue
                     
+                    # 23.1 重置episode相关变量
                     current_step = 0
                     nav_history = []
+
+                    # 23.2 计算并记录评估指标
                     info = infos[i]
                     metric = {}
                     metric['steps_taken'] = info['steps_taken']
                     ep_id = str(envs.current_episodes()[i].episode_id)
-                    gt_path = np.array(self.gt_data[ep_id]['locations']).astype(float)
+                    gt_path = np.array(self.gt_data[ep_id]['locations']).astype(float)  # 获取真实路径
+
+                    # 获取智能体实际走过的路径和碰撞信息
                     if 'current_path' in envs.current_episodes()[i].info.keys():
                         positions_ = np.array(envs.current_episodes()[i].info['current_path']).astype(float)
                         collisions_ = np.array(envs.current_episodes()[i].info['collisions'])
                         assert collisions_.shape[0] == positions_.shape[0] - 1
                     else:
                         positions_ = np.array(dis_to_con(np.array(info['position']['position']))).astype(float)
-                    distance = np.array(info['position']['distance']).astype(float)
-                    metric['distance_to_goal'] = distance[-1]
-                    metric['success'] = 1. if distance[-1] <= 3. else 0.
-                    metric['oracle_success'] = 1. if (distance <= 3.).any() else 0.
-                    metric['path_length'] = np.linalg.norm(positions_[1:] - positions_[:-1],axis=1).sum()
-                    metric['collisions'] = collisions_.mean()
+
+                    distance = np.array(info['position']['distance']).astype(float) # 到目标的距离序列
+                    metric['distance_to_goal'] = distance[-1]   # 最终距离
+                    metric['success'] = 1. if distance[-1] <= 3. else 0.    # 是否成功（距离<3m
+                    metric['oracle_success'] = 1. if (distance <= 3.).any() else 0. # 是否曾经成功过
+                    metric['path_length'] = np.linalg.norm(positions_[1:] - positions_[:-1],axis=1).sum()   # 路径长度
+                    metric['collisions'] = collisions_.mean()   # 平均碰撞率
                     gt_length = distance[0]
+                    # 计算 SPL (Success weighted by Path Length)
                     metric['spl'] = metric['success']*gt_length/max(gt_length,metric['path_length'])
 
+                    # 计算 nDTW (Normalized Dynamic Time Warping)
                     act_con_path = positions_
                     gt_con_path = np.array(gt_path).astype(float)
                     dtw_distance = fastdtw(act_con_path, gt_con_path, dist=NDTW.euclidean_distance)[0]
                     nDTW = np.exp(-dtw_distance / (len(gt_con_path) * config.TASK_CONFIG.TASK.SUCCESS_DISTANCE))
 
                     metric['ndtw'] = nDTW
+
+                    # 将指标存储到字典中
                     stats_episodes[current_episodes[i].episode_id] = metric 
 
+                    # 23.3 重置当前环境并获取新episode的初始观测
                     observations[i] = envs.reset_at(i)[0]
                     instruction, images_list = self.generate_input(observations[i])
                     
+                    # 23.4 更新进度条或打印日志
                     if config.use_pbar:
                         pbar.update()
                     else:
@@ -511,6 +586,9 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                                 time=round(time.time() - start_time),
                             )
                         )
+                
+                # 24. 为下一轮循环准备数据
+                # 重新提取指令token，打包观测批次
                 observations = extract_instruction_tokens(
                     observations,
                     self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID,
@@ -518,6 +596,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                 batch = batch_obs(observations, self.device)
                 batch = apply_obs_transforms_batch(batch, obs_transforms)   
                 
+                # 25. 确定需要暂停的环境（已完成评估的
                 envs_to_pause = []
                 next_episodes = envs.current_episodes()
 
@@ -525,6 +604,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     if next_episodes[i].episode_id in stats_episodes:
                         envs_to_pause.append(i)
 
+                # 26. 暂停已完成的环境
                 headings = torch.tensor(headings)
                 (
                     envs,
@@ -536,29 +616,40 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     envs_to_pause,
                     envs,
                     not_done_masks,
-                    headings,
+                    headings,   # TODO：这里传入headings但返回值覆盖了它，可能是笔误，应该是prev_actions？
                     batch,
                     rgb_frames,
                 )
-                headings = headings.tolist()
+                headings = headings.tolist()    # 更新headings列表
+            
+            # 27. 异常处理：如果在决策或执行过程中出错
             except Exception as e:
                 nav_logger.info(f"Error in next action prediction: {e}")
                 current_step -= 1
+        
+        # 28. 关闭环境和进度条
         envs.close()
         if config.use_pbar:
             pbar.close()
+
+        # 29. 多GPU同步（如果使用分布式训练）
         if self.world_size > 1:
             distr.barrier()
+        
+        # 30. 聚合所有已完成episode的统计信息
         aggregated_stats = {}
         num_episodes = len(stats_episodes)
+        # 计算每个指标的平均值
         for stat_key in next(iter(stats_episodes.values())).keys():
             aggregated_stats[stat_key] = (
                 sum(v[stat_key] for v in stats_episodes.values())
                 / num_episodes
             )
+
+        # 31. 多GPU结果汇总
         total = torch.tensor(num_episodes).cuda()
         if self.world_size > 1:
-            dist.reduce(total,dst=0)
+            dist.reduce(total,dst=0)     # 将所有GPU的episode数汇总到GPU 0
         total = total.item()
 
         if self.world_size > 1:
@@ -570,6 +661,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                 v = (sum(cat_v)/total).item()
                 aggregated_stats[k] = v
 
+        # 32. 保存结果到文件
         split = config.TASK_CONFIG.DATASET.SPLIT
         fname = os.path.join(
             config.RESULTS_DIR,
@@ -578,6 +670,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         with open(fname, "w") as f:
             json.dump(stats_episodes, f, indent=4)
 
+        # 33. 主进程（rank 0）保存聚合后的结果
         if self.local_rank < 1:
             if config.EVAL.SAVE_RESULTS:
                 fname = os.path.join(
@@ -587,6 +680,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                 with open(fname, "w") as f:
                     json.dump(aggregated_stats, f, indent=4)
 
+            # 34. 打印最终评估结果
             logger.info(f"Episodes evaluated: {total}")
             for k, v in aggregated_stats.items():
                 logger.info(f"Average episode {k}: {v:.6f}")
