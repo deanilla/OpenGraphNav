@@ -221,10 +221,14 @@ class spatialClient:
 
         # 2. [调用 SpatialBot] 获取详细的空间描述
         #    定义给 SpatialBot 的提示词，要求它描述物体和距离
+
         # TODO：修改prompt
+
         spatial_scene_description_prompt = "What objects are in the image, and how far are these objects from the camera, calculate the result in meter."
         #    调用 spatialbot_description 方法处理 RGB 和深度图
         spatial_scene_description = self.spatialbot_description(direction_image, spatial_scene_description_prompt)
+
+        # TODO：我觉得其实根本不需要这个RAM来识别物体呀，spacialbot一样得去识别。要是两个识别的不一样怎么办。
 
         # 3. [融合信息] 将 RAM 和 SpatialBot 的输出融合成一个描述
         view_observation = f"Scene Description: {spatial_scene_description} Scene Objects: {img_tags}; "

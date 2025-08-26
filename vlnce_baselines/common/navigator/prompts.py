@@ -1,3 +1,7 @@
+'''prompts.py'''
+# all the following prompts are used in vlnce_baselines/common/navigator/spatialNavigator.py
+# 给SAM和SpacialBot的prompt直接硬编码在api.py中
+
 # Actions Decompsition
 ACTION_DETECTION = {
     'system': "You are an action decomposition expert. Your task is to detect all actions in the given navigation instruction. You need to ensure the integrity of each action. Your answer must consist ONLY of a series of labled action phrases without begin sentence.",

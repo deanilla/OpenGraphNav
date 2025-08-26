@@ -24,10 +24,20 @@ class Open_Nav():
     # =============================
     # ===== Visual Perception =====
     # =============================
-    def observe_environment(self, logger, current_step, images_list):        
+
+    # TODO：使用图来表征环境
+
+    def observe_environment(self, logger, current_step, images_list):
+        '''
+        返回: 方法最终返回两个结果：
+            observe_results (list): 包含所有方向观察结果的列表，按处理顺序排列。
+            observe_dict (dict): 键为方向索引，值为对应观察结果的字典，方便通过索引快速查找。
+            之后调用的都是observe_dict，没有再调用observe_results
+        '''        
         observe_results = []
         observe_dict = {}
         for direction_idx, direction_image in images_list.items(): 
+            # observe_view实现在api.py的spacialClient类中
             observe_result = self.spatial.observe_view(logger, current_step, direction_idx, direction_image)
             logger.info(observe_result)
             observe_results.append(observe_result) 
@@ -37,6 +47,9 @@ class Open_Nav():
     # ===================================
     # ===== Progress Estimation =========
     # ===================================
+
+    # TODO：使用图来存储并监控进度
+
     def save_history(self, logger, current_step, next_vp, thought, curr_observe, nav_history): 
         # ===== get obervation summary =====
         direction_id = int(curr_observe.split("Direction Viewpoint")[0].replace("Direction","").strip())
@@ -75,7 +88,7 @@ class Open_Nav():
     # ===== Move to next position =====
     # =================================
     def move_to_next_vp(self, logger, current_step, instruction, actions, landmarks, history_traj, estimation, observation, observe_dict):    
-        break_flag = True
+        break_flag = True   # TODO：注意一下break_flag
         for i in range(2): # retry twice
             effective_prediction, thought_list = [], []
             batch_responses = self.llm.gpt_infer(NAVIGATOR['system'], 
