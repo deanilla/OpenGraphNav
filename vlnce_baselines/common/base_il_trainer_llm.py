@@ -385,12 +385,12 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         if not os.path.exists(f"cache_files/{dataset_name}"):
             os.makedirs(f"cache_files/{dataset_name}")
 
-        actions_cache_path = f"./cache_files/{dataset_name}/actions_cache.json"
-        if os.path.exists(actions_cache_path): 
-            with open(actions_cache_path, "r", encoding="utf-8") as file:
-                actions_cache = json.load(file)
+        subtasks_cache_path = f"./cache_files/{dataset_name}/subtasks_cache.json"
+        if os.path.exists(subtasks_cache_path): 
+            with open(subtasks_cache_path, "r", encoding="utf-8") as file:
+                subtasks_cache = json.load(file)
         else:
-            actions_cache = {} 
+            subtasks_cache = {} 
         
         # 20. 初始化核心导航器（Open_Nav类实例）
         #     这是执行Spatial-Temporal CoT推理的地方
@@ -415,23 +415,31 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
             nav_logger.info("Instruction: "+instruction)
 
             # 21.3 从缓存获取或通过LLM生成动作序列和地标
-            actions, landmarks = "", ""
-            if instruction not in actions_cache.keys():
+            subtasks = []
+            if instruction not in subtasks_cache.keys():
                 # 调用 Open_Nav 的方法，内部会调用LLM进行推理
-                actions = navigator.get_actions(instruction)
-                landmarks = navigator.get_landmarks(actions)
+                subtasks = navigator.get_subtasks(instruction)
+
                 # 缓存结果
-                actions_cache[instruction] = {"actions": actions, "landmarks": landmarks}
-                with open(actions_cache_path, "w", encoding="utf-8") as f2:
-                    json.dump(actions_cache, f2, indent=2)
+                # --- 序列化 Subtask 对象以便缓存 ---
+                # 将 Subtask 对象列表转换为字典列表
+                subtasks_for_cache = [task.to_dict() for task in subtasks]
+                subtasks_cache[instruction] = {"subtasks": subtasks_for_cache}
+                with open(subtasks_cache_path, "w", encoding="utf-8") as f2:
+                    json.dump(subtasks_cache, f2, indent=2)
             else:
-                actions = actions_cache[instruction]["actions"]
-                landmarks = actions_cache[instruction]["landmarks"]
-            nav_logger.info("Actions: "+actions)
-            nav_logger.info("Landmarks: " + landmarks)
+                # --- 反序列化缓存的字典列表为 Subtask 对象列表 ---
+                # 从缓存中加载字典列表
+                subtasks_from_cache = subtasks_cache[instruction]["subtasks"]
+                # 将字典列表转换回 Subtask 对象列表
+                subtasks = [Subtask(**data) for data in subtasks_from_cache]
+            nav_logger.info(f"Parsed Subtask Queue (Length: {len(subtasks)}):")
+            for i, task in enumerate(subtasks):
+                 nav_logger.info(f"  {i+1}. {task}") # 这里会调用 Subtask 的 __str__ 方法
+
             
             # 21.4 根据动作序列长度确定导航步数上限
-            step_length = 6 if len(actions.split("\n")) <= 6 else 8 
+            step_length = 6 if len(subtasks) <= 6 else 8    # TODO：这是Open-Nav原来的设计，莫名其妙
 
             stop_flag = False   # 停止标志（代码中似乎未被设置为True）
             current_step += 1
