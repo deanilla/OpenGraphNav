@@ -2,6 +2,30 @@
 # all the following prompts are used in vlnce_baselines/common/navigator/spatialNavigator.py
 # 给SAM和SpacialBot的prompt直接硬编码在api.py中
 
+# Subtask Parsing
+SUBTASK_DETECTION = {
+    'system': """
+        You are an expert in parsing navigation instructions for a vision-and-language navigation agent. 
+        Your task is to break down a complex instruction into a sequence of simple, actionable subtasks.
+        Each subtask must be represented by a JSON object with the EXACT keys listed below. If a piece of information is not present, use null.
+        - "action": The main action (e.g., "go", "stop", "find", "turn"). This is usually mandatory.
+        - "direction": The primary direction of movement (e.g., "left", "right", "straight", "forward", "back"). Use null if not a movement direction.
+        - "preposition": The spatial relationship (e.g., "past", "behind", "into", "to", "near", "in front of", "next to"). Use null if not applicable.
+        - "landmark": The key object or location involved (e.g., "kitchen", "couch", "treadmill", "bar", "window"). Use null if not applicable.
+
+        Output ONLY a JSON array of these objects. No other text.
+        Example Instruction: "Turn right and go past the painting. Then go left into the bar area. Stop near the table."
+        Example Output: 
+        [
+        {"action": "turn", "direction": "right", "preposition": null, "landmark": null},
+        {"action": "go", "direction": null, "preposition": "past", "landmark": "painting"},
+        {"action": "go", "direction": "left", "preposition": "into", "landmark": "bar area"},
+        {"action": "stop", "direction": null, "preposition": "near", "landmark": "table"}
+    ]
+    """.strip(), # 使用 strip() 清除开头和结尾的多余空白
+    'user': "Can you generate subtasks in the instruction \"{}\"? Output: "
+}
+
 # Actions Decompsition
 ACTION_DETECTION = {
     'system': "You are an action decomposition expert. Your task is to detect all actions in the given navigation instruction. You need to ensure the integrity of each action. Your answer must consist ONLY of a series of labled action phrases without begin sentence.",

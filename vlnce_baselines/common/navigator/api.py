@@ -27,6 +27,41 @@ from recognize_anything.ram import get_transform
 
 
 
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class Subtask:
+    """
+    Subtask类，自定义的数据结构，组成instruction queue
+    Represents a parsed subtask from the instruction.
+    Fields can be None if not applicable or specified.
+    """
+    action: Optional[str] = None
+    direction: Optional[str] = None
+    preposition: Optional[str] = None
+    landmark: Optional[str] = None
+    
+    def __str__(self):
+        """方便打印和日志记录"""
+        a = self.action if self.action is not None else 'None'
+        d = self.direction if self.direction is not None else 'None'
+        p = self.preposition if self.preposition is not None else 'None'
+        l = self.landmark if self.landmark is not None else 'None'
+        return f"[action={a}, dir={d}, prep={p}, land={l}]"
+
+    def to_dict(self):
+        """转换为字典，方便序列化或传递给LLM提示词"""
+        return {
+            "action": self.action,
+            "direction": self.direction,
+            "preposition": self.preposition,
+            "landmark": self.landmark
+        }
+
+
+
+
 class llmClient:
     def __init__(self, model_type = '', api_key=None, base_url=None):
         '''

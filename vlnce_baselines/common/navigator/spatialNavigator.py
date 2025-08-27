@@ -13,6 +13,10 @@ class Open_Nav():
     # =====================================
     # ===== Instruction Comprehension =====
     # =====================================
+    def get_subtasks(self, instruction):
+        return self.llm.gpt_infer(ACTION_DETECTION['system'], ACTION_DETECTION['user'].format(instruction))
+
+
     def get_actions(self, instruction):
         return self.llm.gpt_infer(ACTION_DETECTION['system'], ACTION_DETECTION['user'].format(instruction))
 
@@ -48,7 +52,7 @@ class Open_Nav():
     # ===== Progress Estimation =========
     # ===================================
 
-    # TODO：使用图来存储并监控进度
+    # TODO：使用队列来存储并监控进度
 
     def save_history(self, logger, current_step, next_vp, thought, curr_observe, nav_history): 
         # ===== get obervation summary =====
@@ -103,7 +107,7 @@ class Open_Nav():
                 logger.info(decision_reasoning)
                 pred_thought = decision_reasoning.split("Prediction:")[0].strip()
                 pred_vp = decision_reasoning.split("Prediction:")[1].strip().replace("\"","").replace("'","").replace("\n","").replace(".","").replace("*","")
-                effective_prediction.append(pred_vp)
+                effective_prediction.append(pred_vp)                            # TODO：⤒ 这里引号对吗
                 thought_list.append(pred_thought)
         return effective_prediction, thought_list, break_flag
     
