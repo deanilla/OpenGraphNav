@@ -26,18 +26,6 @@ SUBTASK_DETECTION = {
     'user': "Can you generate subtasks in the instruction \"{}\"? Output: "
 }
 
-# Actions Decompsition
-ACTION_DETECTION = {
-    'system': "You are an action decomposition expert. Your task is to detect all actions in the given navigation instruction. You need to ensure the integrity of each action. Your answer must consist ONLY of a series of labled action phrases without begin sentence.",
-    'user': "Can you decompose actions in the instruction \"{}\"? Actions: "
-}
-
-# Landmarks Extraction
-LANDMARK_DETECTION = {
-    'system': "You are a landmark extraction expert. Your task is to detect all landmarks in the given navigation instruction. You need to ensure the integrity of each landmarks. Your answer must consist ONLY of a series of labled landmark phrases without other sentences.",
-    'user': "Can you extract landmarks in the instruction \"{}\"? Landmarks: "
-}
-
 # Directions in Observation
 DIRECTIONS = ["Front, range(left 15 to right 15)", "Font Left, range(left 15 to left 45)", "Left, range(left 45 to left 75)", "Left, range(left 75 to left 105)", "Rear Left, range(left 105 to left 135)", "Rear Left, range(left 135 to left 165)",
                     "Back, range(left 165 to right 165)", "Rear Right, range(right 135 to right 165)", "Right, range(right 105 to right 135)", "Right, range(right 75 to right 105)", "Front Right, range(right 45 to right 75)", "Front Right, range(right 15 to right 45)"]

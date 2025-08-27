@@ -464,19 +464,19 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
             nav_logger.info("========== Get Observation ==========")
             observation, observe_dict = navigator.observe_environment(nav_logger, current_step, images_dict)
             
-            # 21.8 调用 Open_Nav 回顾导航历史
-            nav_logger.info("========== Review History ==========")
-            history_traj = navigator.review_history(nav_logger, nav_history) if len(nav_history) > 0 else "Step 0 start position. "
+            
+            # --- 获取当前的子任务目标 (替代旧的 history_traj, actions, landmarks, estimation) ---
+            nav_logger.info("========== Get Current Subtask ==========")
+            current_subtask = navigator.get_current_subtask() # <-- 获取subtasks队列头部的子任务
+            nav_logger.info(f"Current Subtask Goal: {current_subtask}")
 
             # 21.9 如果未停止，执行完整的Spatial-Temporal CoT推理链
             if not stop_flag:
-                # 21.9.1 估计完成进度
-                nav_logger.info("========== Estimate Completion Progress ==========")
-                estimation = navigator.estimate_completion(nav_logger, actions, landmarks, history_traj)
                 
                 # 21.9.2 预测下一步动作
                 nav_logger.info("========== Next Action Prediction ==========")
-                predictions, thoughts, break_flag = navigator.move_to_next_vp(nav_logger, current_step, instruction, actions, landmarks, history_traj, estimation, observation, observe_dict)
+                predictions, thoughts, break_flag = navigator.move_to_next_vp(nav_logger, current_step, current_subtask, observation, observe_dict)
+                                # FIXME：这个break_flag并没有使用？
 
                 # 21.9.3 融合预测和思考
                 nav_logger.info("========== Thought ==========")
@@ -484,7 +484,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                 
                 # 21.9.4 最终决策（选择一个航点）
                 nav_logger.info("========== Test Decision ==========")
-                next_vp, thought, error_number = navigator.test_decisions(nav_logger, fused_pred_thought, observation, instruction, error_number, observe_dict)
+                next_vp, thought, error_number = navigator.test_decisions(nav_logger, fused_pred_thought, observation, current_subtask, error_number, observe_dict)
             
             # 22. 尝试执行动作并处理结果           
             try:
@@ -502,8 +502,11 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     # 22.2 在环境中执行动作
                     outputs = envs.step(env_actions)
                     
-                    # 22.3 保存当前步骤的历史信息
+                    # 22.3 更新subtasks队列，
                     curr_observe = observe_dict[next_vp]
+                    nav_logger.info("========== Progress Estimation ==========")
+                    
+
                     nav_logger.info("========== save history ==========")
                     nav_history = navigator.save_history(nav_logger, current_step, next_vp, thought, curr_observe, nav_history)
                 

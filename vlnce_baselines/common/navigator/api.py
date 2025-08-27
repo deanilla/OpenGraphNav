@@ -1,3 +1,5 @@
+'''api.py'''
+
 from openai import OpenAI
 import torch
 import numpy as np
@@ -27,8 +29,8 @@ from recognize_anything.ram import get_transform
 
 
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any
 
 @dataclass
 class Subtask:
@@ -58,6 +60,47 @@ class Subtask:
             "preposition": self.preposition,
             "landmark": self.landmark
         }
+
+
+@dataclass
+class TrajectoryTreeNode:
+    """
+    Represents a node in the trajectory tree.
+    """
+    viewpoint_id: int                    # 航点ID (e.g., "0", "1")
+    observation: str                     # 在该航点的观察描述 (来自 observe_environment)
+    thought: str                         # 选择该航点时的思考/理由 (来自 test_decisions)
+    subtask_at_time: Optional['Subtask'] # 选择该航点时的当前子任务
+    parent: Optional['TrajectoryTreeNode'] = None  # 父节点
+    children: List['TrajectoryTreeNode'] = field(default_factory=list) # 子节点列表
+    # 可以添加更多属性，如时间戳、坐标估计等
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def add_child(self, child_node: 'TrajectoryTreeNode'):
+        """添加一个子节点"""
+        child_node.parent = self
+        self.children.append(child_node)
+
+    def get_path_from_root(self) -> List['TrajectoryTreeNode']:
+        """获取从根节点到当前节点的路径"""
+        path = []
+        current = self
+        while current is not None:
+            path.append(current)
+            current = current.parent
+        return path[::-1] # Reverse to get root-to-current order
+
+    def get_recent_path(self, depth: int) -> List['TrajectoryTreeNode']:
+        """获取从当前节点向上追溯指定深度的路径"""
+        path = []
+        current = self
+        for _ in range(depth):
+            if current is None:
+                break
+            path.append(current)
+            current = current.parent
+        return path[::-1] # Reverse to get ancestor-to-current order
+
 
 
 
