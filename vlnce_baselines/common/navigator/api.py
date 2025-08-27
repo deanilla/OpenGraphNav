@@ -1,4 +1,4 @@
-'''api.py'''
+'''vlnce_baselines/common/navigator/api.py'''
 
 from openai import OpenAI
 import torch

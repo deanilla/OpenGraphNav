@@ -1,26 +1,65 @@
-'''spacialNavigator.py'''
+'''vlnce_baselines/common/navigator/spatialNavigator.py'''
 import re   # 正则表达式
 import random
 import json # get_subtasks中解析用
 from vlnce_baselines.common.navigator.api import *
 from vlnce_baselines.common.navigator.prompts import *
 
+from typing import List, Dict, Optional # 添加类型注解所需
+
 class Open_Nav():
     def __init__(self, device, llm_type, api_key):
         self.device = device
         self.llm = llmClient(llm_type, api_key)
         self.spatial = spatialClient(self.device)
+
+        # 新增：初始化用于管理 subtask_queue 和 trajectory_tree 的状态变量
+        self.current_subtask_queue: List[Subtask] = []
+        self.trajectory_tree_root: Optional[TrajectoryTreeNode] = None
+        self.current_trajectory_node: Optional[TrajectoryTreeNode] = None
+        self.candidates_from_last_step: Dict[str, str] = {}
         
     # =====================================
     # ===== Instruction Comprehension =====
     # =====================================
     def get_subtasks(self, instruction: str) -> list[Subtask]:
+        """
+        将自然语言指令解析为 Subtask 对象的列表。
+        """
         llm_response =  self.llm.gpt_infer(SUBTASK_DETECTION['system'], SUBTASK_DETECTION['user'].format(instruction))
         # 尝试将 LLM 的 JSON 字符串响应解析为 Python 对象
         subtasks_data = json.loads(llm_response)
         # 将字典列表转换为 Subtask 对象列表
         subtask_queue = [Subtask(**data) for data in subtasks_data]
         return subtask_queue
+    
+    # --- 新增：管理 subtask_queue 的方法 ---
+    def set_subtask_queue(self, subtask_queue: List[Subtask]):
+        """接收并存储解析好的子任务队列"""
+        self.current_subtask_queue = subtask_queue
+        # 可选：重置轨迹树，为新队列做准备
+        # self.trajectory_tree_root = None
+        # self.current_trajectory_node = None
+        print(f"Open_Nav: Subtask queue set with {len(self.current_subtask_queue)} tasks.")
+
+    def get_current_subtask(self) -> Subtask:
+        """获取当前子任务 (队列的第一个元素)"""
+        if self.current_subtask_queue:
+            return self.current_subtask_queue[0]
+        else:
+            # 如果队列空了，返回一个表示结束的子任务
+            return Subtask(action="finished")
+        
+    def mark_subtask_done(self):
+        """当一个子任务完成时，将其从队列中移除"""
+        if self.current_subtask_queue:
+            completed_task = self.current_subtask_queue.pop(0)
+            print(f"Open_Nav: Marked subtask as done: {completed_task}")
+            print(f"Open_Nav: Remaining subtasks ({len(self.current_subtask_queue)}):")
+            for i, task in enumerate(self.current_subtask_queue):
+                print(f"  {i+1}. {task}")
+        else:
+            print("Open_Nav: Warning: Attempted to mark subtask done, but queue is empty.")
     
     
     # =============================
@@ -52,51 +91,182 @@ class Open_Nav():
 
     # TODO：使用队列来存储并监控进度
 
-    def save_history(self, logger, current_step, next_vp, thought, curr_observe, nav_history): 
-        # ===== get obervation summary =====
-        direction_id = int(curr_observe.split("Direction Viewpoint")[0].replace("Direction","").strip())
-        direction = DIRECTIONS[direction_id]
-        curr_observe = "Scene Description"+curr_observe.split("Scene Description")[1]
-        observation = f"Direction {direction} " + self.llm.gpt_infer(OBSERVATION_SUMMARY['system'], OBSERVATION_SUMMARY['user'].format(curr_observe))
-        # ===== get thought summary =====
-        thought = self.llm.gpt_infer(THOUGHT_SUMMARY['system'], THOUGHT_SUMMARY['user'].format(thought))
-        # ===== get nav history =====
-        nav_history.append({
-            "step": current_step,
-            "viewpoint": next_vp,
-            "observation": observation,
-            "thought": thought
-        })
-        logger.info(f"The history at current step is {nav_history}")
-        return nav_history
-    
-    def review_history(self, logger, nav_history):
-        nav_history_str = " -> ".join(["Step "+str(idx+1)+" Observation: "+item["observation"]+" Thought: "+item["thought"] for idx, item in enumerate(nav_history)])
-        logger.info("History: " + nav_history_str)
-        return nav_history_str
-    
-    def estimate_completion(self, logger, actions, landmarks, history_traj):
-        response = self.llm.gpt_infer(COMPLETION_ESTIMATION['system'], COMPLETION_ESTIMATION['user'].format(history_traj, landmarks, actions))
-        if "Executed Actions" in response:
-            logger.info("Executed Actions " + response)
-            if "Executed Actions:" in response:
-                return response.split("Executed Actions:")[1].strip()
-            else:
-                return response.split("Executed Actions")[1].strip()
+
+        
+
+    # --- 新增：管理 trajectory_tree 构建所需状态的方法 ---
+    def set_candidates_for_tree_building(self, observe_dict: Dict[str, str]):
+        """临时存储当前步骤的所有候选航点观察，用于后续构建 trajectory tree 节点"""
+        self.candidates_from_last_step = observe_dict.copy()
+        # print(f"Open_Nav: Candidates for tree building set: {list(self.candidates_from_last_step.keys())}")
+
+    def update_trajectory_tree(self, chosen_viewpoint_id: str, 
+                              observation_at_chosen_vp: str, 
+                              thought_when_chosen: str,
+                              subtask_when_chosen: Subtask):
+        """
+        根据上一步的决策结果更新导航轨迹树。
+        """
+        # 1. 创建代表新选择航点的节点
+        # 注意：viewpoint_id 在 TrajectoryTreeNode 中被定义为 int，需要转换
+        try:
+            vp_id_int = int(chosen_viewpoint_id)
+        except ValueError:
+            print(f"Warning: Could not convert VP ID '{chosen_viewpoint_id}' to int. Using 0.")
+            vp_id_int = 0
+            
+        new_node = TrajectoryTreeNode(
+            viewpoint_id=vp_id_int,
+            observation = observation_at_chosen_vp,
+            thought = thought_when_chosen,
+            subtask_at_time = subtask_when_chosen
+        )
+        
+        # 2. 如果是第一步，初始化树
+        if self.trajectory_tree_root is None:
+            self.trajectory_tree_root = new_node
+            self.current_trajectory_node = self.trajectory_tree_root
+            print(f"Open_Nav: Initialized trajectory tree with root node: VP {chosen_viewpoint_id}")
         else:
-            return response
+            # 3. 否则，将新节点作为当前节点的子节点
+            if self.current_trajectory_node:
+                self.current_trajectory_node.add_child(new_node)
+                # 更新当前节点为新添加的节点
+                self.current_trajectory_node = new_node
+                print(f"Open_Nav: Added node VP {chosen_viewpoint_id} as child of VP {self.current_trajectory_node.parent.viewpoint_id if self.current_trajectory_node.parent else 'None'}")
+            else:
+                 print("Open_Nav: Error: current_trajectory_node is None when trying to add child.")
+
+        # 4. 清理临时存储
+        self.candidates_from_last_step = {}
+        # print("Open_Nav: Cleared candidates for tree building.")
+
     
+
+        # --- 新增：判断子任务是否完成的方法 ---
+    def is_subtask_completed(self, subtask: Subtask, observation: str, logger) -> bool:
+        """
+        (核心逻辑) 判断一个子任务是否基于观察完成。
+        此方法应由 base_il_trainer_llm.py 在执行动作后调用，
+        以决定是否将当前子任务从队列中移除。
+
+        Args:
+            subtask (Subtask): 当前需要判断的子任务对象。
+            observation (str): 智能体执行动作后，在目标航点获得的环境观察描述。
+            logger: 日志记录器 (可以从 base_il_trainer_llm.py 传入)。
+
+        Returns:
+            bool: True 表示任务完成，False 表示未完成。
+        """
+        # 为日志添加前缀，方便区分
+        log_prefix = "[is_subtask_completed]"
+        logger.info(f"{log_prefix} Checking completion for subtask: {subtask}")
+        logger.info(f"{log_prefix} Against observation: {observation[:100]}...") # 只打印前100个字符
+
+        # --- 策略 1: 处理 "stop" 动作 ---
+        if subtask.action and "stop" in subtask.action.lower():
+            logger.info(f"{log_prefix} Subtask action is 'stop'. Marking as completed.")
+            return True
+
+        # --- 策略 2: 基于地标 (Landmark) 的完成判断 ---
+        if subtask.landmark:
+            landmark_lower = subtask.landmark.lower()
+            observation_lower = observation.lower()
+
+            # 2.1 简单文本匹配：观察中是否提到了地标
+            if landmark_lower in observation_lower:
+                logger.info(f"{log_prefix} Landmark '{subtask.landmark}' found in observation.")
+                
+                # 2.2 (可选/更高级) 检查空间关系 (如果子任务指定了)
+                if subtask.preposition:
+                    prep_lower = subtask.preposition.lower()
+                    # 简单处理常见 preposition
+                    if prep_lower in ["near", "to", "at", "next to", "in front of", "beside"]:
+                         logger.info(f"{log_prefix} Preposition '{subtask.preposition}' suggests proximity. Assuming completed.")
+                         return True
+                    elif prep_lower in ["past", "behind"]: 
+                        logger.info(f"{log_prefix} Preposition '{subtask.preposition}' requires more context (e.g., history). Not marking completed yet.")
+                        return False # 需要历史信息判断
+                    else:
+                        logger.info(f"{log_prefix} Preposition '{subtask.preposition}' not specifically handled. Defaulting to completed (as landmark was seen).")
+                        return True
+                else:
+                    # 没有指定 preposition，看到 landmark 就认为完成
+                    logger.info(f"{log_prefix} No specific preposition. Landmark seen, assuming completed.")
+                    return True
+            else:
+                logger.info(f"{log_prefix} Landmark '{subtask.landmark}' NOT found in observation.")
+                return False
+
+        # --- 策略 3: 基于动作 (Action) 和方向 (Direction) 的完成判断 ---
+        # 例如，子任务是 "turn left"
+        # 在基于航点的导航中，选择一个航点通常就意味着 "go" 或 "turn" 动作的执行。
+        if subtask.action:
+            action_lower = subtask.action.lower()
+            if "turn" in action_lower or "go" in action_lower:
+                 # 选择航点即执行，认为完成
+                 logger.info(f"{log_prefix} Action '{subtask.action}' (potentially with direction) executed by choosing a waypoint. Marking as completed.")
+                 return True
+
+        # --- (可选/高级) 策略 4: 使用 LLM 辅助判断 ---
+        # 如果基于规则的判断不够，可以调用 LLM
+        # 注意：这会增加一次 LLM 调用的开销
+        # system_prompt = "You are an expert in evaluating navigation task completion..."
+        # user_prompt = f"Given the subtask '{subtask}' and the observation '{observation}', has the subtask been completed? Answer with only 'Yes' or 'No'."
+        # llm_response = self.llm.gpt_infer(system_prompt, user_prompt)
+        # is_completed = "yes" in llm_response.lower()
+        # logger.info(f"{log_prefix} LLM judged completion as: {is_completed} (Response: {llm_response})")
+        # return is_completed
+
+        # --- 默认情况 ---
+        logger.info(f"{log_prefix} Could not determine completion from available rules. Assuming NOT completed.")
+        return False
+
+
     # =================================
     # ===== Move to next position =====
     # =================================
-    def move_to_next_vp(self, logger, current_step, instruction, actions, landmarks, history_traj, estimation, observation, observe_dict):    
+    # TODO: 修改方法签名以使用 current_subtask
+    def move_to_next_vp(self, logger, current_step, current_subtask: Subtask, observation, observe_dict):    
+        """
+        基于当前子任务和环境观察，预测下一步应该去哪个航点。
+
+        Args:
+            logger: 日志记录器。
+            current_step (int): 当前导航步数。
+            current_subtask (Subtask): 当前需要完成的子任务。
+            observation (list): 所有航点的观察结果列表（可能未使用，取决于Prompt设计）。
+            observe_dict (dict): 航点索引到观察结果的字典。
+
+        Returns:
+            tuple: (effective_prediction, thought_list, break_flag)
+        """
         break_flag = True   # TODO：注意一下break_flag
+
+        # 提取候选航点ID列表
+        candidate_vp_ids = list(observe_dict.keys())
+        
+        # 将当前子任务转换为易于Prompt使用的字符串格式
+        # 你可以根据需要调整这个格式
+        current_subtask_str = (
+            f"Action: {current_subtask.action or 'N/A'}, "
+            f"Direction: {current_subtask.direction or 'N/A'}, "
+            f"Preposition: {current_subtask.preposition or 'N/A'}, "
+            f"Landmark: {current_subtask.landmark or 'N/A'}"
+        )
+
         for i in range(2): # retry twice
             effective_prediction, thought_list = [], []
-            batch_responses = self.llm.gpt_infer(NAVIGATOR['system'], 
-                                                  NAVIGATOR['user'].format(observe_dict.keys(), current_step, instruction,
-                                                                           actions, landmarks, history_traj, estimation, observation),
-                                                  num_output=3)
+            batch_responses = self.llm.gpt_infer(
+                NAVIGATOR['system'], 
+                NAVIGATOR['user'].format(
+                    candidate_vp_ids,       # 候选航点
+                    current_step,           # 当前步数
+                    current_subtask_str,    # 结构化的当前子任务
+                    observation             # 观察
+                ),
+                num_output=3
+            )
             for decision_reasoning in batch_responses:
                 logger.info(decision_reasoning)
                 if "Prediction:" not in decision_reasoning:
@@ -104,7 +274,10 @@ class Open_Nav():
                 logger.info(f"================retry id {i} in pred_vp==========")
                 logger.info(decision_reasoning)
                 pred_thought = decision_reasoning.split("Prediction:")[0].strip()
-                pred_vp = decision_reasoning.split("Prediction:")[1].strip().replace("\"","").replace("'","").replace("\n","").replace(".","").replace("*","")
+                # 提取预测的航点ID，增强鲁棒性
+                pred_text = decision_reasoning.split("Prediction:")[1].strip()
+                # 移除常见的标点符号
+                pred_vp = re.sub(r'[\"\'\n\.\*\`\`\`]', '', pred_text).strip()
                 effective_prediction.append(pred_vp)                            # TODO：⤒ 这里引号对吗
                 thought_list.append(pred_thought)
         return effective_prediction, thought_list, break_flag
@@ -126,8 +299,24 @@ class Open_Nav():
             matched_dict[key] = one_thought 
         return matched_dict 
     
-    def test_decisions(self, logger, fused_pred_thought, observation, instruction, error_number, observe_dict):
+    # TODO: 修改方法签名以使用 current_subtask
+    def test_decisions(self, logger, fused_pred_thought, observation, current_subtask: Subtask, error_number, observe_dict):
+        """
+        从融合后的候选决策中，做出最终的选择。
+
+        Args:
+            logger: 日志记录器。
+            fused_pred_thought (dict): 航点到融合思考的字典。
+            observation: 当前整体观察。
+            current_subtask (Subtask): 当前子任务。
+            error_number (int): 错误计数。
+            observe_dict (dict): 候选航点观察字典。
+
+        Returns:
+            tuple: (next_vp, thought, error_number)
+        """
         try:
+            # 清理无效的航点索引
             for fused_key in list(fused_pred_thought.keys()):
                 if len(fused_key) > 2:
                     fused_pred_thought.pop(fused_key)
@@ -139,10 +328,18 @@ class Open_Nav():
                 for key, value in fused_pred_thought.items():
                     return key, value, error_number
             else:
+                # 如果有多个候选，则再次调用LLM进行最终决策
                 fused_pred_thought_ = "; ".join(["Direction Viewpoint ID: "+key+" Thought: "+value for key, value in fused_pred_thought.items()])
+
+                # TODO：将当前子任务信息加入Prompt
+                current_subtask_str = (
+                    f"Action: {current_subtask.action or 'N/A'}, "
+                    f"Landmark: {current_subtask.landmark or 'N/A'}"
+                )
+
                 for i in range(2): 
                     logger.info(f"========== {i} retry in test decision==========")
-                    next_vp = self.llm.gpt_infer(DECISION_TEST['system'], DECISION_TEST['user'].format(fused_pred_thought.keys(), observation, instruction, fused_pred_thought_))
+                    next_vp = self.llm.gpt_infer(DECISION_TEST['system'], DECISION_TEST['user'].format(fused_pred_thought.keys(), observation, current_subtask_str, fused_pred_thought_))
                     logger.info(f"Next predicted action is {next_vp}")
                     if re.search(r'\D', next_vp):
                         next_vp = re.search(r'\d+', next_vp).group() 

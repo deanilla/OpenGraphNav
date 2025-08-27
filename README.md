@@ -1,9 +1,9 @@
-# ?
+# 🤔
 
 ### TODO
 
-- [ ] Subtask queue, to determine progress and current step
-- [ ] Trajectory tree, to record navigation history (for waypoint navigation)
+- [x] Subtask queue, to determine progress and current step
+- [x] Trajectory tree, to record navigation history (for waypoint navigation)
 - [ ] Scene Graph, to represent the scene
 - [ ] backtracking & blacklist mechanism, used with Trajectory tree
 

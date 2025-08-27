@@ -1,3 +1,4 @@
+'''vlnce_baselines/common/base_il_trainer_llm.py'''
 import json
 import sys
 import jsonlines
@@ -243,9 +244,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         return waypoint_images, waypoint_radius, waypoint_distances
     
 
-    def _eval_llm(
-        self,
-    ) -> None:
+    def _eval_llm(self,) -> None:
         r"""Evaluation.
 
         Args:
@@ -396,7 +395,6 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         #     这是执行Spatial-Temporal CoT推理的地方
         navigator = Open_Nav(self.device,config.LLM, config.API_KEY)
         current_step = 0
-        nav_history = []
         error_number = 0
 
         # 21. 主评估循环：只要还有环境在运行且未达到评估数量上限
@@ -417,25 +415,28 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
             # 21.3 从缓存获取或通过LLM生成动作序列和地标
             subtasks = []
             if instruction not in subtasks_cache.keys():
-                # 调用 Open_Nav 的方法，内部会调用LLM进行推理
                 subtasks = navigator.get_subtasks(instruction)
-
-                # 缓存结果
-                # --- 序列化 Subtask 对象以便缓存 ---
-                # 将 Subtask 对象列表转换为字典列表
+                # 序列化 Subtask 对象以便缓存，将 Subtask 对象列表转换为字典列表
                 subtasks_for_cache = [task.to_dict() for task in subtasks]
                 subtasks_cache[instruction] = {"subtasks": subtasks_for_cache}
                 with open(subtasks_cache_path, "w", encoding="utf-8") as f2:
                     json.dump(subtasks_cache, f2, indent=2)
             else:
-                # --- 反序列化缓存的字典列表为 Subtask 对象列表 ---
-                # 从缓存中加载字典列表
+                # 反序列化缓存的字典列表为 Subtask 对象列表，从缓存中加载字典列表
                 subtasks_from_cache = subtasks_cache[instruction]["subtasks"]
                 # 将字典列表转换回 Subtask 对象列表
                 subtasks = [Subtask(**data) for data in subtasks_from_cache]
+            
             nav_logger.info(f"Parsed Subtask Queue (Length: {len(subtasks)}):")
             for i, task in enumerate(subtasks):
                  nav_logger.info(f"  {i+1}. {task}") # 这里会调用 Subtask 的 __str__ 方法
+
+            # 将解析好的 subtasks 队列传递给 navigator，以管理当前的子任务队列
+            navigator.set_subtask_queue(subtasks) # TODO：需要在 Open_Nav 中实现这个方法
+            # 获取第一个子任务
+            current_subtask = navigator.get_current_subtask()   # TODO
+
+            # TODO：初始化当前 Episode 的 Trajectory Tree
 
             
             # 21.4 根据动作序列长度确定导航步数上限
@@ -464,6 +465,8 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
             nav_logger.info("========== Get Observation ==========")
             observation, observe_dict = navigator.observe_environment(nav_logger, current_step, images_dict)
             
+            # --- 将候选航点观察传递给 navigator，用于后续构建 trajectory tree 节点 ---
+            navigator.set_candidates_for_tree_building(observe_dict) # TODO：需要在 Open_Nav 中实现
             
             # --- 获取当前的子任务目标 (替代旧的 history_traj, actions, landmarks, estimation) ---
             nav_logger.info("========== Get Current Subtask ==========")
@@ -502,14 +505,34 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     # 22.2 在环境中执行动作
                     outputs = envs.step(env_actions)
                     
-                    # 22.3 更新subtasks队列，
-                    curr_observe = observe_dict[next_vp]
-                    nav_logger.info("========== Progress Estimation ==========")
-                    
+                    # --- 更新 Trajectory Tree ---
+                    nav_logger.info("========== Update Trajectory Tree ==========")
+                    # 1. 获取选择的航点观察
+                    observation_at_chosen_vp = observe_dict.get(next_vp, "")
+                    # 2. 调用 navigator 的方法来更新树
+                    #    这个方法内部会使用之前 set_candidates_for_tree_building 保存的 observe_dict
+                    navigator.update_trajectory_tree(
+                        chosen_viewpoint_id=next_vp,
+                        observation_at_chosen_vp=observation_at_chosen_vp,
+                        thought_when_chosen=thought,
+                        subtask_when_chosen=current_subtask
+                    )
 
-                    nav_logger.info("========== save history ==========")
-                    nav_history = navigator.save_history(nav_logger, current_step, next_vp, thought, curr_observe, nav_history)
-                
+                    # --- 进度估计与子任务队列更新 ---
+                    nav_logger.info("========== Progress Estimation ==========")
+                    # 判断当前子任务是否完成
+                    if navigator.is_subtask_completed(current_subtask, observation_at_chosen_vp, nav_logger):
+                        nav_logger.info(f"Subtask {current_subtask} completed. Removing from queue.")
+                        navigator.mark_subtask_done() # 通知 navigator 子任务已完成
+                        # 获取下一个子任务
+                        current_subtask = navigator.get_current_subtask()
+                        nav_logger.info(f"New current subtask: {current_subtask}")
+                        # (可选) 可以在这里通知 trajectory tree 发生了子任务切换
+                        # navigator.on_subtask_switched() 
+                    else:
+                        nav_logger.info(f"Subtask {current_subtask} NOT completed. Will continue.")
+
+
                     # 22.4 获取新观测，并重置错误计数
                     observations, _, dones, infos = [list(x) for x in zip(*outputs)]
                     instruction, images_list = self.generate_input(observations[-1])
@@ -520,7 +543,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     if current_step == step_length:
                         dones[0] = True 
                     else:
-                        # 22.6 否则更新环境内部路径信息（用于评估指标计算）
+                        # 否则更新环境内部路径信息（用于评估指标计算）
                         for j, ob in enumerate(observations):
                             envs.call_at(j, 
                                 'change_current_path',
@@ -544,7 +567,6 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     
                     # 23.1 重置episode相关变量
                     current_step = 0
-                    nav_history = []
 
                     # 23.2 计算并记录评估指标
                     info = infos[i]
