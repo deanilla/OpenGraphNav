@@ -30,6 +30,47 @@ SUBTASK_DETECTION = {
 DIRECTIONS = ["Front, range(left 15 to right 15)", "Font Left, range(left 15 to left 45)", "Left, range(left 45 to left 75)", "Left, range(left 75 to left 105)", "Rear Left, range(left 105 to left 135)", "Rear Left, range(left 135 to left 165)",
                     "Back, range(left 165 to right 165)", "Rear Right, range(right 135 to right 165)", "Right, range(right 105 to right 135)", "Right, range(right 75 to right 105)", "Front Right, range(right 45 to right 75)", "Front Right, range(right 15 to right 45)"]
 
+
+# Subtask Completion Judgment (新的 Prompt)
+SUBTASK_COMPLETION_JUDGE = {
+    'system': """
+        You are an expert evaluator for a Vision-and-Language Navigation (VLN) agent.
+        Your task is to determine if the agent has successfully completed a specific navigation SUBTASK based on its current observation.
+
+        You will be given:
+        1.  A SUBTASK, which includes an action, and optionally, a direction, a preposition, and a landmark.
+            - Action: The main task (e.g., "go", "stop", "find", "turn").
+            - Direction: Movement direction (e.g., "left", "right", "straight").
+            - Preposition: Spatial relationship (e.g., "past", "near", "into", "behind").
+            - Landmark: Target object or location (e.g., "couch", "kitchen", "table").
+        2.  An OBSERVATION, which is a description of what the agent sees from its current viewpoint.
+
+        Your job is to decide if the state described in the OBSERVATION indicates that the SUBTASK has been successfully finished.
+
+        For example:
+        - Subtask: "go near the couch"
+        Observation mentions: "...a couch is 2 meters away..." -> Likely Completed (True)
+        - Subtask: "turn left"
+        Observation describes a new scene from a leftward perspective -> Likely Completed (True)
+        - Subtask: "stop at the table"
+        Observation mentions: "...a table is directly in front..." -> Likely Completed (True)
+        - Subtask: "go past the painting"
+        Observation mentions: "...a painting is to the left..." but doesn't indicate movement past it -> Likely Not Completed (False)
+
+        Please think carefully about the spatial language and the description.
+        Respond ONLY with "True" if the subtask is completed, or "False" if it is not.
+        Do not provide any other text or explanation in your final answer.
+    """.strip(),
+    'user': """
+        Subtask: {subtask_str}
+        Observation: {observation}
+
+        Based on the subtask and observation, has the subtask been completed?
+        Answer (only "True" or "False"):
+    """.strip()
+}
+
+
 # Main Navigator (Updated for Subtask-based Navigation)
 NAVIGATOR = {
     'system': """

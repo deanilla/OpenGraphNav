@@ -143,84 +143,52 @@ class Open_Nav():
 
     
 
-    # --- 新增：判断子任务是否完成的方法 ---
     def is_subtask_completed(self, subtask: Subtask, observation: str, logger) -> bool:
         """
-        (核心逻辑) 判断一个子任务是否基于观察完成。
-        此方法应由 base_il_trainer_llm.py 在执行动作后调用，
-        以决定是否将当前子任务从队列中移除。
-
-        Args:
-            subtask (Subtask): 当前需要判断的子任务对象。
-            observation (str): 智能体执行动作后，在目标航点获得的环境观察描述。
-            logger: 日志记录器 (可以从 base_il_trainer_llm.py 传入)。
-
-        Returns:
-            bool: True 表示任务完成，False 表示未完成。
+        (核心逻辑) 利用 LLM 判断一个子任务是否基于观察完成。
+        ...
         """
-        # 为日志添加前缀，方便区分
         log_prefix = "[is_subtask_completed]"
         logger.info(f"{log_prefix} Checking completion for subtask: {subtask}")
-        logger.info(f"{log_prefix} Against observation: {observation[:100]}...") # 只打印前100个字符
+        logger.info(f"{log_prefix} Against observation: {observation[:100]}...")
 
-        # --- 策略 1: 处理 "stop" 动作 ---
-        if subtask.action and "stop" in subtask.action.lower():
-            logger.info(f"{log_prefix} Subtask action is 'stop'. Marking as completed.")
-            return True
+        # 1. 准备 Prompt
+        # 将 Subtask 对象转换为易于 LLM 理解的字符串
+        subtask_str = (
+            f"Action: '{subtask.action or 'N/A'}', "
+            f"Direction: '{subtask.direction or 'N/A'}', "
+            f"Preposition: '{subtask.preposition or 'N/A'}', "
+            f"Landmark: '{subtask.landmark or 'N/A'}'"
+        )
 
-        # --- 策略 2: 基于地标 (Landmark) 的完成判断 ---
-        if subtask.landmark:
-            landmark_lower = subtask.landmark.lower()
-            observation_lower = observation.lower()
-
-            # 2.1 简单文本匹配：观察中是否提到了地标
-            if landmark_lower in observation_lower:
-                logger.info(f"{log_prefix} Landmark '{subtask.landmark}' found in observation.")
-                
-                # 2.2 (可选/更高级) 检查空间关系 (如果子任务指定了)
-                if subtask.preposition:
-                    prep_lower = subtask.preposition.lower()
-                    # 简单处理常见 preposition
-                    if prep_lower in ["near", "to", "at", "next to", "in front of", "beside"]:
-                         logger.info(f"{log_prefix} Preposition '{subtask.preposition}' suggests proximity. Assuming completed.")
-                         return True
-                    elif prep_lower in ["past", "behind"]: 
-                        logger.info(f"{log_prefix} Preposition '{subtask.preposition}' requires more context (e.g., history). Not marking completed yet.")
-                        return False # 需要历史信息判断
-                    else:
-                        logger.info(f"{log_prefix} Preposition '{subtask.preposition}' not specifically handled. Defaulting to completed (as landmark was seen).")
-                        return True
-                else:
-                    # 没有指定 preposition，看到 landmark 就认为完成
-                    logger.info(f"{log_prefix} No specific preposition. Landmark seen, assuming completed.")
-                    return True
+        # 2. 调用 LLM
+        try:
+            logger.info(f"{log_prefix} Prompting LLM for subtask completion judgment...")
+            # llm_response = self.llm.gpt_infer(system_prompt, user_prompt)
+            # 或者更简洁地直接使用导入的字典
+            llm_response = self.llm.gpt_infer(
+                SUBTASK_COMPLETION_JUDGE['system'],
+                SUBTASK_COMPLETION_JUDGE['user'].format(subtask_str=subtask_str, observation=observation)
+            )
+            
+            # 3. 解析 LLM 的响应 (后续代码保持不变)
+            logger.info(f"{log_prefix} LLM Response: {llm_response}")
+            response_clean = llm_response.strip().lower()
+            if "true" in response_clean:
+                is_completed = True
+            elif "false" in response_clean:
+                is_completed = False
             else:
-                logger.info(f"{log_prefix} Landmark '{subtask.landmark}' NOT found in observation.")
-                return False
+                logger.warning(f"{log_prefix} LLM response was unclear ('{llm_response}'). Defaulting to NOT completed.")
+                is_completed = False
+                
+        except Exception as e:
+            logger.error(f"{log_prefix} Error calling LLM for completion check: {e}")
+            logger.info(f"{log_prefix} Defaulting to NOT completed due to error.")
+            is_completed = False
 
-        # --- 策略 3: 基于动作 (Action) 和方向 (Direction) 的完成判断 ---
-        # 例如，子任务是 "turn left"
-        # 在基于航点的导航中，选择一个航点通常就意味着 "go" 或 "turn" 动作的执行。
-        if subtask.action:
-            action_lower = subtask.action.lower()
-            if "turn" in action_lower or "go" in action_lower:
-                 # 选择航点即执行，认为完成
-                 logger.info(f"{log_prefix} Action '{subtask.action}' (potentially with direction) executed by choosing a waypoint. Marking as completed.")
-                 return True
-
-        # --- (可选/高级) 策略 4: 使用 LLM 辅助判断 ---
-        # 如果基于规则的判断不够，可以调用 LLM
-        # 注意：这会增加一次 LLM 调用的开销
-        # system_prompt = "You are an expert in evaluating navigation task completion..."
-        # user_prompt = f"Given the subtask '{subtask}' and the observation '{observation}', has the subtask been completed? Answer with only 'Yes' or 'No'."
-        # llm_response = self.llm.gpt_infer(system_prompt, user_prompt)
-        # is_completed = "yes" in llm_response.lower()
-        # logger.info(f"{log_prefix} LLM judged completion as: {is_completed} (Response: {llm_response})")
-        # return is_completed
-
-        # --- 默认情况 ---
-        logger.info(f"{log_prefix} Could not determine completion from available rules. Assuming NOT completed.")
-        return False
+        logger.info(f"{log_prefix} Judged subtask completion as: {is_completed}")
+        return is_completed
 
 
     # =================================
