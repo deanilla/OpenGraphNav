@@ -143,7 +143,7 @@ class Open_Nav():
 
     
 
-        # --- 新增：判断子任务是否完成的方法 ---
+    # --- 新增：判断子任务是否完成的方法 ---
     def is_subtask_completed(self, subtask: Subtask, observation: str, logger) -> bool:
         """
         (核心逻辑) 判断一个子任务是否基于观察完成。
