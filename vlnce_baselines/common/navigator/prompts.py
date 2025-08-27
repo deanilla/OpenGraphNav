@@ -21,7 +21,7 @@ SUBTASK_DETECTION = {
         {"action": "go", "direction": null, "preposition": "past", "landmark": "painting"},
         {"action": "go", "direction": "left", "preposition": "into", "landmark": "bar area"},
         {"action": "stop", "direction": null, "preposition": "near", "landmark": "table"}
-    ]
+        ]
     """.strip(), # 使用 strip() 清除开头和结尾的多余空白
     'user': "Can you generate subtasks in the instruction \"{}\"? Output: "
 }

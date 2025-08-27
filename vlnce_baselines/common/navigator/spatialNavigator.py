@@ -1,5 +1,6 @@
 import re   # 正则表达式
 import random
+import json # get_subtasks中解析用
 from vlnce_baselines.common.navigator.api import *
 from vlnce_baselines.common.navigator.prompts import *
 
@@ -13,8 +14,14 @@ class Open_Nav():
     # =====================================
     # ===== Instruction Comprehension =====
     # =====================================
-    def get_subtasks(self, instruction):
-        return self.llm.gpt_infer(ACTION_DETECTION['system'], ACTION_DETECTION['user'].format(instruction))
+    def get_subtasks(self, instruction: str) -> list[Subtask]:
+        llm_response =  self.llm.gpt_infer(SUBTASK_DETECTION['system'], SUBTASK_DETECTION['user'].format(instruction))
+        # 尝试将 LLM 的 JSON 字符串响应解析为 Python 对象
+        subtasks_data = json.loads(llm_response)
+        # 将字典列表转换为 Subtask 对象列表
+        subtask_queue = [Subtask(**data) for data in subtasks_data]
+        return subtask_queue
+
 
 
     def get_actions(self, instruction):
@@ -24,6 +31,7 @@ class Open_Nav():
         # 替换“换行”为“空格”，将多行动作文本合并为一行，方便处理
         actions = actions.replace("\n", " ")
         return self.llm.gpt_infer(LANDMARK_DETECTION['system'], LANDMARK_DETECTION['user'].format(actions))
+    
     
     # =============================
     # ===== Visual Perception =====
