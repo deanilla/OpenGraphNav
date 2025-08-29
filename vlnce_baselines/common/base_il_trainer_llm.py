@@ -438,6 +438,26 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
 
             # TODO：初始化当前 Episode 的 Trajectory Tree
 
+
+            # --- Scene Graph Integration: 初始化和首次更新 ---
+            # 假设起始航点 ID 是 "0"。
+            # 注意：需要确认这个 ID 是否总是对应 images_list 中的起始观察。
+            # 如果不确定，可能需要从环境状态 envs.current_episodes() 中获取。
+            start_waypoint_id = "0" # <--- 需要根据实际情况确认或动态获取
+            nav_logger.info("========== Initialize and Update Scene Graph ==========")
+            if start_waypoint_id in images_list:
+                start_direction_image = images_list[start_waypoint_id]
+                # 1. 初始化 Scene Graph (添加起始航点节点)
+                #    注意：Open_Nav.initialize_scene_graph 的实现目前只添加了节点。
+                #    我们将在下一步立即更新它。
+                navigator.initialize_scene_graph(start_waypoint_id, start_direction_image, nav_logger)
+                
+                # 2. 立即更新 Scene Graph (基于起始航点的观察，添加物体和关系)
+                navigator.update_scene_graph(start_waypoint_id, start_direction_image, nav_logger)
+            else:
+                nav_logger.error(f"Start waypoint ID '{start_waypoint_id}' not found in images_list. Scene Graph initialization/update skipped.")
+            # --- Scene Graph Integration End ---
+
             
             # 21.4 根据动作序列长度确定导航步数上限
             step_length = 6 if len(subtasks) <= 6 else 8    # TODO：这是Open-Nav原来的设计，莫名其妙
@@ -504,6 +524,19 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
 
                     # 22.2 在环境中执行动作
                     outputs = envs.step(env_actions)
+
+
+                    # --- Scene Graph Integration: 更新新航点 ---
+                    # 在获取新观测后，立即更新 Scene Graph
+                    nav_logger.info("========== Update Scene Graph for New Waypoint ==========")
+                    # 假设 next_vp 是刚刚选择并移动到的航点 ID
+                    if next_vp in images_list: # 确保新航点的图像数据可用
+                        new_waypoint_id = next_vp
+                        new_direction_image = images_list[new_waypoint_id]
+                        navigator.update_scene_graph(new_waypoint_id, new_direction_image, nav_logger)
+                    else:
+                        nav_logger.warning(f"Image data for new waypoint '{next_vp}' not found in images_list. Scene Graph update skipped for this step.")
+                    # --- Scene Graph Integration End ---
                     
                     # --- 更新 Trajectory Tree ---
                     nav_logger.info("========== Update Trajectory Tree ==========")
