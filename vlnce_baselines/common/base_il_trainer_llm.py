@@ -440,7 +440,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
 
 
             # --- Scene Graph Integration: 初始化和首次更新 ---
-            # 假设起始航点 ID 是 "0"。
+            # HACK：假设起始航点 ID 是 "0"。
             # 注意：需要确认这个 ID 是否总是对应 images_list 中的起始观察。
             # 如果不确定，可能需要从环境状态 envs.current_episodes() 中获取。
             start_waypoint_id = "0" # <--- 需要根据实际情况确认或动态获取

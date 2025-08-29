@@ -16,13 +16,13 @@ class Open_Nav():
         self.llm = llmClient(llm_type, api_key)
         self.spatial = spatialClient(self.device)
 
-        # 新增：初始化用于管理 subtask_queue 和 trajectory_tree 的状态变量
+        # 初始化用于管理 subtask_queue 和 trajectory_tree 的状态变量
         self.current_subtask_queue: List[Subtask] = []
         self.trajectory_tree_root: Optional[TrajectoryTreeNode] = None
         self.current_trajectory_node: Optional[TrajectoryTreeNode] = None
         self.candidates_from_last_step: Dict[str, str] = {}
 
-        # --- 新增：Scene Graph 管理 ---
+        # --- Scene Graph 管理 ---
         self.scene_graph: Optional[SceneGraph] = None
         
     # =====================================
@@ -39,14 +39,10 @@ class Open_Nav():
         subtask_queue = [Subtask(**data) for data in subtasks_data]
         return subtask_queue
     
-    # --- 新增：管理 subtask_queue 的方法 ---
+    # --- 管理 subtask_queue 的方法 ---
     def set_subtask_queue(self, subtask_queue: List[Subtask]):
         """接收并存储解析好的子任务队列"""
         self.current_subtask_queue = subtask_queue
-        # 可选：重置轨迹树，为新队列做准备
-        # self.trajectory_tree_root = None
-        # self.current_trajectory_node = None
-        print(f"Open_Nav: Subtask queue set with {len(self.current_subtask_queue)} tasks.")
 
     def get_current_subtask(self) -> Subtask:
         """获取当前子任务 (队列的第一个元素)"""
@@ -72,14 +68,8 @@ class Open_Nav():
     # ===== Visual Perception =====
     # =============================
 
-
-
-
-
-
-
     # TODO：使用图来表征环境
-
+    # deprecated
     def observe_environment(self, logger, current_step, images_list):
         '''
         返回: 方法最终返回两个结果：
@@ -103,14 +93,10 @@ class Open_Nav():
 
     # TODO：使用队列来存储并监控进度
 
-
-        
-
-    # --- 新增：管理 trajectory_tree 构建所需状态的方法 ---
+    # --- 管理 trajectory_tree 构建所需状态的方法 ---
     def set_candidates_for_tree_building(self, observe_dict: Dict[str, str]):
         """临时存储当前步骤的所有候选航点观察，用于后续构建 trajectory tree 节点"""
         self.candidates_from_last_step = observe_dict.copy()
-        # print(f"Open_Nav: Candidates for tree building set: {list(self.candidates_from_last_step.keys())}")
 
     def update_trajectory_tree(self, chosen_viewpoint_id: str, 
                               observation_at_chosen_vp: str, 
@@ -120,7 +106,7 @@ class Open_Nav():
         根据上一步的决策结果更新导航轨迹树。
         """
         # 1. 创建代表新选择航点的节点
-        # 注意：viewpoint_id 在 TrajectoryTreeNode 中被定义为 int，需要转换
+        # HACK：viewpoint_id 在 TrajectoryTreeNode 中被定义为 int，需要转换
         try:
             vp_id_int = int(chosen_viewpoint_id)
         except ValueError:
@@ -151,15 +137,15 @@ class Open_Nav():
 
         # 4. 清理临时存储
         self.candidates_from_last_step = {}
-        # print("Open_Nav: Cleared candidates for tree building.")
 
 
     
     def initialize_scene_graph(self, start_waypoint_id: str, direction_image: dict, logger):
+        # FIXME：direction_image未使用
         """
-        (占位符/简化版) 在 Episode 开始时，基于初始观察初始化 Scene Graph。
+        在 Episode 开始时，基于初始观察初始化 Scene Graph。
         当前实现：仅添加起始航点节点。
-        未来可以集成更复杂的初始化逻辑。
+        # TODO：未来可以集成更复杂的初始化逻辑。
 
         Args:
             start_waypoint_id (str): 起始航点的 ID。
@@ -200,15 +186,8 @@ class Open_Nav():
 
         logger.info(f"{log_prefix} Updating SceneGraph for waypoint {current_waypoint_id}.")
 
-        # 1. (可选) 获取当前航点的局部子图，用于与新观察进行比对
-        #    这有助于实现更高级的融合逻辑（如更新置信度、确认存在等）
-        #    对于基础实现，我们可以暂时不传入子图。
+        # 1. 获取当前航点的局部子图
         current_subgraph: Optional[SceneGraph] = None
-        # 如果需要子图，可以这样获取：
-        # try:
-        #     current_subgraph = self.scene_graph.get_subgraph_around_node(f"wp_{current_waypoint_id}", radius=2)
-        # except Exception as e:
-        #     logger.warning(f"{log_prefix} Could not get subgraph: {e}. Proceeding without it.")
 
         # 2. 调用 spatialClient 的新方法获取更新
         try:
@@ -216,7 +195,7 @@ class Open_Nav():
                 logger=logger,
                 current_waypoint_id=current_waypoint_id,
                 direction_image=direction_image,
-                current_subgraph=current_subgraph # 可以传入 None 或实际的子图
+                current_subgraph=current_subgraph
             )
         except Exception as e:
             logger.error(f"{log_prefix} Error calling spatialClient.update_scene_graph_from_observation: {e}")
@@ -255,7 +234,7 @@ class Open_Nav():
                 # 边已存在，更新其属性（例如，提高置信度）
                 # 注意：NetworkX 边属性更新可以直接通过字典赋值
                 existing_edge_data = self.scene_graph.graph[edge.source_id][edge.target_id]
-                # 简单示例：提高置信度（但不超过1）
+                # 示例：提高置信度（但不超过1）
                 old_conf = existing_edge_data.get('confidence', 0.5)
                 new_conf = min(1.0, old_conf + 0.1) # 增加0.1置信度
                 existing_edge_data['confidence'] = new_conf
@@ -270,7 +249,6 @@ class Open_Nav():
     def is_scene_graph_initialized(self) -> bool:
         """检查 Scene Graph 是否已初始化。"""
         return self.scene_graph is not None and self.scene_graph.graph.number_of_nodes() > 0
-
 
 
 
@@ -295,8 +273,6 @@ class Open_Nav():
         # 2. 调用 LLM
         try:
             logger.info(f"{log_prefix} Prompting LLM for subtask completion judgment...")
-            # llm_response = self.llm.gpt_infer(system_prompt, user_prompt)
-            # 或者更简洁地直接使用导入的字典
             llm_response = self.llm.gpt_infer(
                 SUBTASK_COMPLETION_JUDGE['system'],
                 SUBTASK_COMPLETION_JUDGE['user'].format(subtask_str=subtask_str, observation=observation)
@@ -325,7 +301,6 @@ class Open_Nav():
     # =================================
     # ===== Move to next position =====
     # =================================
-    # TODO: 修改方法签名以使用 current_subtask
 
     def move_to_next_vp(self, logger, current_step, current_subtask: Subtask, observation, observe_dict):    
         """
@@ -359,9 +334,7 @@ class Open_Nav():
         
         # --- 新增：获取 Scene Graph 信息 ---
         scene_graph_context = "No scene graph context available."
-        # 假设我们知道当前智能体所在的航点 ID
-        # 这可以从 self.current_trajectory_node 获取，或者作为参数传入
-        # 注意 ID 格式的统一 (例如，trajectory node 存的是整数 0, SceneGraph node ID 是字符串 "wp_0")
+        # TODO：航点 ID
         current_agent_wp_id_int = None
         if self.current_trajectory_node:
             current_agent_wp_id_int = self.current_trajectory_node.viewpoint_id
@@ -371,7 +344,7 @@ class Open_Nav():
                 current_wp_node_id_sg = f"wp_{current_agent_wp_id_int}"
                 
                 # 3. 获取以当前智能体所在航点为中心的局部子图
-                #    radius 可以根据需要调整
+                # TODO：radius 可以根据需要调整
                 current_subgraph = self.scene_graph.get_subgraph_around_node(current_wp_node_id_sg, radius=2) 
                 
                 # 4. 将子图序列化为文本
@@ -382,7 +355,6 @@ class Open_Nav():
                 scene_graph_context = "Error retrieving scene graph context."
         else:
             logger.info(f"{log_prefix} Scene Graph or current agent waypoint not available. Proceeding without Scene Graph context.")
-        # --- 新增结束 ---
 
         # 5. 调用 LLM 进行推理
         #    将候选航点、当前步数、当前子任务、以及最重要的 Scene Graph 上下文传递给 LLM
@@ -430,7 +402,6 @@ class Open_Nav():
             matched_dict[key] = one_thought 
         return matched_dict 
     
-    # TODO: 修改方法签名以使用 current_subtask
     def test_decisions(self, logger, fused_pred_thought, observation, current_subtask: Subtask, error_number, observe_dict):
         """
         从融合后的候选决策中，做出最终的选择。

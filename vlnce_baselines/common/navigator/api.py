@@ -6,12 +6,12 @@ import numpy as np
 
 import sys
 import os
+import warnings
 
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import warnings
 
 from transformers import AutoConfig, AutoModelForCausalLM
 from SpatialBot3B.configuration_bunny_phi import *
@@ -29,17 +29,14 @@ from recognize_anything.ram import get_transform
 
 from vlnce_baselines.common.graph.scene_graph import *
 
-
-
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
+
 
 @dataclass
 class Subtask:
     """
     Subtask类，自定义的数据结构，组成instruction queue
-    Represents a parsed subtask from the instruction.
-    Fields can be None if not applicable or specified.
     """
     action: Optional[str] = None
     direction: Optional[str] = None
@@ -67,15 +64,15 @@ class Subtask:
 @dataclass
 class TrajectoryTreeNode:
     """
-    Represents a node in the trajectory tree.
+    trajectory tree中的节点类实现
     """
     viewpoint_id: int                    # 航点ID (e.g., "0", "1")
-    observation: str                     # 在该航点的观察描述 (来自 observe_environment)
-    thought: str                         # 选择该航点时的思考/理由 (来自 test_decisions)
-    subtask_at_time: Optional['Subtask'] # 选择该航点时的当前子任务
+    observation: str                     # TODO：原为在该航点的观察描述 (来自 observe_environment)，须删去，功能由scene graph中waypoint node的子图替代。
+    thought: str                         # HACK：选择该航点时的思考/理由 (来自 test_decisions)，用于CoT
+    subtask_at_time: Optional['Subtask']        # 选择该航点时的子任务
     parent: Optional['TrajectoryTreeNode'] = None  # 父节点
     children: List['TrajectoryTreeNode'] = field(default_factory=list) # 子节点列表
-    # 可以添加更多属性，如时间戳、坐标估计等
+    # TODO：不需要添加更多属性，如时间戳、坐标估计等
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def add_child(self, child_node: 'TrajectoryTreeNode'):
@@ -83,6 +80,7 @@ class TrajectoryTreeNode:
         child_node.parent = self
         self.children.append(child_node)
 
+    # TODO：这两个函数为回溯/剪枝设计，暂时未用
     def get_path_from_root(self) -> List['TrajectoryTreeNode']:
         """获取从根节点到当前节点的路径"""
         path = []
@@ -223,22 +221,13 @@ class spatialClient:
             prompt = f"{prompt}\n{json_instruction}"
         # 1. 构造输入给 SpatialBot 的文本提示
         offset_bos = 0
-        # 构造一个标准的对话格式，其中包含图像占位符 <image 1> 和 <image 2>
-        # TODO：这text是干啥
+        # TODO：这段text是干啥的？
         text = f"A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. USER: <image 1>\n<image 2>\n{prompt} ASSISTANT:"
         
         # 2. 对文本进行分词处理
-        #    - 将包含图像占位符的文本按占位符分割
-        #    - 对每个分割后的文本块分别进行分词
         text_chunks = [self.spatialbot_tokenizer(chunk).input_ids for chunk in text.split('<image 1>\n<image 2>\n')]
         
         # 3. 构造最终的输入 ID 张量
-        #    - text_chunks[0]: 第一个文本块的 token ID
-        #    - [-201]: 图像1的特殊占位符 ID (模型自定义)
-        #    - [-202]: 图像2的特殊占位符 ID (模型自定义)
-        #    - text_chunks[1][offset_bos:]: 第二个文本块的 token ID (从 offset_bos 开始)
-        #    - torch.tensor(...).unsqueeze(0): 转换为张量并增加批次维度
-        #    - .to(self.device): 移动到指定设备
         input_ids = torch.tensor(text_chunks[0] + [-201] + [-202] + text_chunks[1][offset_bos:], dtype=torch.long).unsqueeze(0).to(self.device)
         
         # 4. 准备图像输入
@@ -305,6 +294,7 @@ class spatialClient:
         else:
             return response_text
 
+    # HACK：deprecated
     def observe_view(self, logger, current_step, direction_idx, direction_image):
         """
         [Scene Perception 的核心实现]
@@ -360,8 +350,7 @@ class spatialClient:
             current_waypoint_id (str): 智能体当前所在的航点 ID。
             direction_image (dict): 包含该航点 'rgb' 和 'depth' 图像的字典。
             current_subgraph (Optional[SceneGraph]):
-                (可选) 当前以 current_waypoint_id 为中心的 SceneGraph 子图。
-                如果提供，将用于与新观察进行比对和融合。
+                当前以 current_waypoint_id 为中心的 SceneGraph 子图。
 
         Returns:
             Tuple[List[SceneNode], List[SceneEdge]]: 
@@ -388,14 +377,11 @@ class spatialClient:
         if not wp_node_exists_in_subgraph:
             logger.info(f"{log_prefix} Current waypoint node '{current_wp_node_id}' not found in subgraph or subgraph is None. Will include it in updates if needed.")
             # 创建航点节点（如果需要添加到主图）
-            # 注意：实际的 position, heading 等信息可能需要从环境中获取
             wp_node = SceneNode(
                 id=current_wp_node_id,
                 type=NodeType.WAYPOINT,
                 attributes={
                     'viewpoint_id': int(current_waypoint_id) if current_waypoint_id.isdigit() else current_waypoint_id,
-                    # 'position': [x, y, z], # 如果可获取
-                    # 'heading': radian,     # 如果可获取
                 }
             )
             new_nodes.append(wp_node)
@@ -412,8 +398,7 @@ class spatialClient:
             img_tags_list = []
 
         # 3. 调用 SpatialBot 获取结构化的物体及其关系
-        # 设计一个 Prompt，让它不仅能识别物体，还能推断物体之间的关系，以及物体与航点的关系
-        # 这是一个非常关键且有挑战性的 Prompt，需要精心设计和迭代优化
+        # TODO：优化此prompt
         spatial_scene_prompt = (
             "Analyze the image from an agent's viewpoint inside a room. "
             "Your task is twofold: "
@@ -431,14 +416,11 @@ class spatialClient:
             '  ],'
             '  "relationships": ['
             '    {"source_id": "sofa_1", "relation": "left_of", "target_id": "lamp_1"},'
-            '    {"source_id": "lamp_1", "relation": "right_of", "target_id": "sofa_1"}' # 可以只生成一个方向，或两个方向都生成
+            '    {"source_id": "lamp_1", "relation": "right_of", "target_id": "sofa_1"}'
             '  ]'
             "}"
             "Now, provide the JSON output for the image."
-            # --- 关键：在 Prompt 中或通过其他方式告诉模型当前航点的 ID ---
-            # 这里我们假设模型能处理上下文，或者在调用 LLM 时将 current_wp_node_id 作为额外信息传入
-            # 例如，在 `spatialbot_description` 的 Prompt 构造部分动态加入：
-            # f"\n\nThe agent's current viewpoint ID is: {current_wp_node_id}"
+            # TODO：在 Prompt 中或通过其他方式告诉模型当前航点的 ID ---
         )
         
         # 动态修改 Prompt 以包含航点 ID
@@ -467,9 +449,6 @@ class spatialClient:
             logger.info(f"{log_prefix} SpatialBot found {len(detected_objects)} objects and {len(detected_relationships)} relationships.")
         else:
             logger.warning(f"{log_prefix} SpatialBot did not return a valid dict. Output was: {spatialbot_output}")
-            # Fallback: 如果 SpatialBot 失败，可以尝试只用 RAM 的标签创建基础 Object 节点
-            # 并创建它们与航点的 "observes" 或 "near" 关系
-            # 这种 fallback 逻辑可以根据需要添加
 
         # 5. 将检测到的对象转换为 SceneNode
         # 使用一个字典来跟踪新创建的节点 ID，避免重复处理
@@ -478,9 +457,7 @@ class spatialClient:
             if isinstance(obj_dict, dict) and 'id' in obj_dict and 'name' in obj_dict:
                 obj_id = obj_dict['id']
                 obj_name = obj_dict['name']
-                # 为了避免 ID 冲突，可以考虑加上航点前缀，但这取决于你的全局 ID 策略
-                # full_obj_id = f"{current_waypoint_id}_{obj_id}" 
-                # 为了与后续关系处理一致，我们暂时使用 SpatialBot 提供的 ID
+                # TODO：为了避免 ID 冲突，可以考虑加上航点前缀
                 full_obj_id = obj_id 
                 
                 if full_obj_id in processed_object_ids:
@@ -509,33 +486,22 @@ class spatialClient:
                 tgt_id = rel_dict['target_id']
                 
                 # 确定边的类型
-                # 这是一个简化的分类，实际应用中可能需要更复杂的逻辑或由 LLM 直接输出类型
+                # TODO：边分类判断逻辑
                 edge_type = EdgeType.SPATIAL # 默认是空间关系
                 if relation in ['inside', 'part_of']:
                     edge_type = EdgeType.AFFILIATION
-                # FUNCTIONAL 关系可能需要更明确的指示或后处理
                 
                 # 创建边
-                # 注意：需要确保 source 和 target 节点是存在的（或将在此次更新中添加）
-                # 如果关系涉及未在此处处理的节点（例如，子图中已存在的其他物体），主图更新逻辑需要处理
+                # TODO：如果关系涉及未在此处处理的节点（例如，子图中已存在的其他物体），主图更新逻辑需要处理
                 edge = SceneEdge(
                     source_id=src_id,
                     target_id=tgt_id,
                     relation=relation,
                     type=edge_type,
-                    confidence=0.9 # 假设的置信度，可以基于 LLM 的确定性或其他因素调整
+                    confidence=0.9 # TODO：假设的置信度，可以基于 LLM 的确定性或其他因素调整
                 )
                 new_edges.append(edge)
                 logger.debug(f"{log_prefix} Created Edge: {edge}")
-
-        # 7. (可选) 与 current_subgraph 进行比对和融合
-        # 这是高级功能，可以在此处添加逻辑：
-        # - 检查 new_nodes 中的节点是否与 subgraph.nodes 中的节点匹配（例如，通过位置、类别）
-        #   - 如果匹配，可以更新属性或增加置信度，而不是创建新节点
-        # - 检查 new_edges 中的边是否与 subgraph.edges 中的边匹配
-        #   - 如果匹配，可以更新置信度
-        # - 识别 subgraph 中存在但当前观察中未检测到的节点/边，并决定是否降低其置信度或标记为“未确认”
-        # 为简化起见，当前实现将新观察到的信息作为增量直接返回。
 
         logger.info(f"{log_prefix} Scene graph update preparation complete. "
                     f"Returning {len(new_nodes)} new/updated nodes and {len(new_edges)} new/updated edges.")
