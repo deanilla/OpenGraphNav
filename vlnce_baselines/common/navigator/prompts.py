@@ -116,3 +116,17 @@ DECISION_TEST = {
                             The answer should only be a number and within the candidate list.",
     'user': "The candidate list: {}. Can you help me make a final decision? The Observation: {}, Navigation Instruction: {}, {}, Final Decision: "
 }
+
+
+# Snapshot Env description
+SNAPSHOT_DESCRIPTION = {
+    'system': "You are an environment description expert. Your task is to generate a concise but informative \
+                description of the current environment based on the provided context. ",
+    'user': "Current Viewpoint: {} \
+                Scene Context: {} \
+                Please provide a brief description that includes: \
+                1. Current location/area \
+                2. Notable objects or landmarks visible \
+                3. General spatial layout \
+                Keep it concise (1-2 sentences)."
+}

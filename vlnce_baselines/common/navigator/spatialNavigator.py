@@ -24,6 +24,12 @@ class Open_Nav():
 
         # --- Scene Graph 管理 ---
         self.scene_graph: Optional[SceneGraph] = None
+
+        # --- Snapshot ---
+        self.snapshots: List[Snapshot] = []                    # 快照列表
+        self.snapshot_mode: str = "basic"                      # 快照模式: "basic" 或 "detailed"
+        self.viewpoint_to_snapshot: Dict[str, List[Snapshot]] = {}  # 航点到快照的映射
+        self.step_to_snapshot: Dict[int, Snapshot] = {}        # 步骤到快照的映射
         
     # =====================================
     # ===== Instruction Comprehension =====
@@ -465,4 +471,139 @@ class Open_Nav():
                     logger.info(f"Random choice a next predicted action {next_vp}, error number reset to {error_number}")
                     return next_vp, observe_description, error_number
             return "error_next_vp", "None", error_number
+        
+
+    # =====================================
+    # ===== Snapshot Mechanism ============
+    # =====================================
+
+    def set_snapshot_mode(self, mode: str):
+        """
+        设置快照模式
+        
+        Args:
+            mode (str): "basic" 或 "detailed"
+        """
+        if mode in ["basic", "detailed"]:
+            self.snapshot_mode = mode
+            print(f"Open_Nav: Snapshot mode set to {mode}")
+        else:
+            print(f"Open_Nav: Invalid snapshot mode {mode}. Use 'basic' or 'detailed'.")
+
+    def create_snapshot(self, step_id: int, viewpoint_id: str, 
+                    current_subtask: Subtask, action_executed: str,
+                    scene_graph_context: str = "") -> Snapshot:
+        """
+        创建快照
+        
+        Args:
+            step_id (int): 当前步骤ID
+            viewpoint_id (str): 当前航点ID
+            current_subtask (Subtask): 当前子任务
+            action_executed (str): 刚刚执行的动作
+            scene_graph_context (str): 场景图上下文（用于detailed模式）
+            
+        Returns:
+            Snapshot: 创建的快照对象
+        """
+        # 生成环境描述
+        if self.snapshot_mode == "basic":
+            environment_description = f"At viewpoint {viewpoint_id}"
+        else:  # detailed mode
+            environment_description = self._generate_detailed_environment_description(
+                viewpoint_id, scene_graph_context, current_subtask)
+        
+        # 创建快照
+        snapshot = Snapshot(
+            step_id=step_id,
+            viewpoint_id=viewpoint_id,
+            current_subtask=current_subtask,
+            completed_subtasks=self.current_subtask_queue[:len(self.current_subtask_queue) - len(self.get_remaining_subtasks())] if hasattr(self, 'get_remaining_subtasks') else [],
+            environment_description=environment_description,
+            action_executed=action_executed
+        )
+        
+        return snapshot
+
+    def _generate_detailed_environment_description(self, viewpoint_id: str, 
+                                                scene_graph_context: str,
+                                                current_subtask: Subtask) -> str:
+        """
+        生成详细的环境描述（用于detailed模式）
+        
+        Args:
+            viewpoint_id (str): 当前航点ID
+            scene_graph_context (str): 场景图上下文
+            current_subtask (Subtask): 当前子任务
+            
+        Returns:
+            str: 详细的环境描述
+        """
+        # 使用LLM生成详细的环境描述
+
+        llm_response =  self.llm.gpt_infer(SNAPSHOT_DESCRIPTION['system'], SNAPSHOT_DESCRIPTION['user'].format(viewpoint_id, scene_graph_context, current_subtask))
+
+        return llm_response.strip()
+
+    def save_snapshot(self, snapshot: Snapshot):
+        """
+        保存快照并建立映射关系
+        
+        Args:
+            snapshot (Snapshot): 要保存的快照
+        """
+        # 添加到快照列表
+        self.snapshots.append(snapshot)
+        
+        # 建立步骤到快照的映射
+        self.step_to_snapshot[snapshot.step_id] = snapshot
+        
+        # 建立航点到快照的映射
+        if snapshot.viewpoint_id not in self.viewpoint_to_snapshot:
+            self.viewpoint_to_snapshot[snapshot.viewpoint_id] = []
+        self.viewpoint_to_snapshot[snapshot.viewpoint_id].append(snapshot)
+        
+        print(f"Open_Nav: Saved snapshot for step {snapshot.step_id} at viewpoint {snapshot.viewpoint_id}")
+
+    def get_snapshots_by_viewpoint(self, viewpoint_id: str) -> List[Snapshot]:
+        """
+        根据航点ID获取相关快照
+        
+        Args:
+            viewpoint_id (str): 航点ID
+            
+        Returns:
+            List[Snapshot]: 该航点的所有快照
+        """
+        return self.viewpoint_to_snapshot.get(viewpoint_id, [])
+
+    def get_snapshot_by_step(self, step_id: int) -> Optional[Snapshot]:
+        """
+        根据步骤ID获取快照
+        
+        Args:
+            step_id (int): 步骤ID
+            
+        Returns:
+            Optional[Snapshot]: 对应的快照，如果不存在则返回None
+        """
+        return self.step_to_snapshot.get(step_id)
+
+    def get_all_snapshots(self) -> List[Snapshot]:
+        """
+        获取所有快照
+        
+        Returns:
+            List[Snapshot]: 所有快照的列表
+        """
+        return self.snapshots.copy()
+
+    def get_latest_snapshot(self) -> Optional[Snapshot]:
+        """
+        获取最新的快照
+        
+        Returns:
+            Optional[Snapshot]: 最新的快照，如果没有则返回None
+        """
+        return self.snapshots[-1] if self.snapshots else None
 

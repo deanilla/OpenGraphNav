@@ -2,17 +2,18 @@
 
 from enum import Enum
 from dataclasses import dataclass, field
-import networkx as nx  # 使用 NetworkX 库来处理图结构
+import networkx as nx                                                           # 选用 NetworkX 库，来处理图
 from typing import Dict, Any, Optional, List, Set, Tuple 
+
 
 class NodeType(Enum):
     """
     定义场景图中节点的类型。
     """
-    OBJECT = "object"     # 物体节点 (e.g., chair, table)
-    GROUP = "group"       # 组节点 (e.g., dining set, TV area)
-    ROOM = "room"         # 房间节点 (e.g., living room, kitchen)
-    WAYPOINT = "waypoint" # 航点节点 (来自 trajectory tree)
+    OBJECT = "object"               # 物体节点 (e.g., chair, table)
+    GROUP = "group"                 # 组节点 (e.g., dining set, TV area)
+    ROOM = "room"                   # 房间节点 (e.g., living room, kitchen)
+    WAYPOINT = "waypoint"           # 航点节点 (来自 trajectory tree)
 
     def __str__(self):
         return self.value
@@ -21,9 +22,9 @@ class EdgeType(Enum):
     """
     定义场景图中边的类型。
     """
-    AFFILIATION = "affiliation"  # 跨层级的归属关系 (e.g., Object -> Room, Group -> Room)
-    SPATIAL = "spatial"          # 同层级的空间关系 (e.g., Object -> Object: 'near', 'left_of')
-    FUNCTIONAL = "functional"    # 同层级的功能关系 (e.g., Group -> Group: 'opposite')
+    AFFILIATION = "affiliation"     # 跨层级的归属关系 (e.g., Object -> Room, Group -> Room)
+    SPATIAL = "spatial"             # 同层级的空间关系 (e.g., Object -> Object: 'near', 'left_of')
+    FUNCTIONAL = "functional"       # 同层级的功能关系 (e.g., Group -> Group: 'opposite')
 
     def __str__(self):
         return self.value
@@ -32,16 +33,16 @@ class EdgeType(Enum):
 @dataclass
 class SceneNode:
     """
-    场景图中的一个节点。
+    场景图中的节点类。
     """
-    id: str                 # 节点唯一标识符 (e.g., "obj_1", "grp_2", "room_3", "wp_4")
-    type: NodeType          # 节点类型
+    id: str                         # 节点的ID，唯一标识符 (e.g., "obj_1", "grp_2", "room_3", "wp_4")
+    type: NodeType                  # 节点的类型
     attributes: Dict[str, Any] = field(default_factory=dict)
-    # attributes 可以包含:
-    # - 对于 OBJECT: {'category': 'chair', 'instance_id': 123, 'color': 'red', 'bbox': ...}
-    # - 对于 GROUP: {'category': 'dining_set', 'member_ids': ['obj_1', 'obj_2', ...]}
-    # - 对于 ROOM: {'category': 'living_room', 'instance_id': 456}
-    # - 对于 WAYPOINT: {'position': [x, y, z], 'heading': radian}
+        # 节点属性 attributes 可以包含:
+            # 对于 OBJECT: {'category': 'chair', 'instance_id': 123, 'color': 'red', 'bbox': ...}
+            # 对于 GROUP: {'category': 'dining_set', 'member_ids': ['obj_1', 'obj_2', ...]}
+            # 对于 ROOM: {'category': 'living_room', 'instance_id': 456}
+            # 对于 WAYPOINT: {'position': [x, y, z], 'heading': radian}
     
     def __str__(self):
         return f"Node(id='{self.id}', type={self.type}, attributes={self.attributes})"
@@ -49,13 +50,13 @@ class SceneNode:
 @dataclass
 class SceneEdge:
     """
-    场景图中连接两个节点的边。
+    场景图中的边类。
     """
-    source_id: str      # 起始节点ID
-    target_id: str      # 目标节点ID
-    relation: str       # 关系描述 (e.g., 'inside', 'left_of', 'near', 'opposite')
-    type: EdgeType      # 边的类型
-    confidence: float = 1.0 # 关系置信度 (可选)
+    source_id: str                  # 起始节点的ID
+    target_id: str                  # 终止节点的ID
+    relation: str                   # 两节点间的关系 (e.g., 'inside', 'left_of', 'near', 'opposite')
+    type: EdgeType                  # 边的类型
+    confidence: float = 1.0         # TODO: 关系置信度 (可选)
 
     def __str__(self):
         return f"Edge({self.source_id} --[{self.relation}, {self.type}]--> {self.target_id}, conf={self.confidence})"
@@ -64,7 +65,7 @@ class SceneEdge:
 
 class SceneGraph:
     """
-    表示一个层次化的 3D 场景图。
+    场景图类。
     使用 NetworkX 图来存储节点和边，便于进行图算法操作。
     """
     def __init__(self):

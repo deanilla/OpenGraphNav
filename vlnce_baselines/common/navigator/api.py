@@ -1,5 +1,6 @@
 '''vlnce_baselines/common/navigator/api.py'''
 
+import time
 from openai import OpenAI
 import torch
 import numpy as np
@@ -100,6 +101,35 @@ class TrajectoryTreeNode:
             path.append(current)
             current = current.parent
         return path[::-1] # Reverse to get ancestor-to-current order
+
+
+@dataclass
+class Snapshot:
+    """
+    快照类，用于记录特定时刻的任务状态与环境信息
+    """
+    step_id: int                           # 步骤ID
+    viewpoint_id: str                      # 当前航点ID
+    current_subtask: Optional[Subtask]     # 当前执行的子任务
+    completed_subtasks: List[Subtask]      # 已完成的子任务列表
+    environment_description: str           # 环境简要描述
+    action_executed: str                   # 刚刚执行的动作
+    timestamp: float = field(default_factory=time.time)  # 时间戳
+    
+    def __str__(self):
+        return f"Snapshot(step={self.step_id}, vp={self.viewpoint_id}, task={self.current_subtask})"
+    
+    def to_dict(self):
+        """转换为字典，便于序列化"""
+        return {
+            "step_id": self.step_id,
+            "viewpoint_id": self.viewpoint_id,
+            "current_subtask": self.current_subtask.to_dict() if self.current_subtask else None,
+            "completed_subtasks": [task.to_dict() for task in self.completed_subtasks],
+            "environment_description": self.environment_description,
+            "action_executed": self.action_executed,
+            "timestamp": self.timestamp
+        }
 
 
 class llmClient:

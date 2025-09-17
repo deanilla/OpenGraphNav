@@ -243,7 +243,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                 
         return waypoint_images, waypoint_radius, waypoint_distances
     
-
+# ！测试主函数！
     def _eval_llm(self,) -> None:
         r"""Evaluation.
 
@@ -264,10 +264,10 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         # 允许场景重复，不限制重复步数
         config.TASK_CONFIG.ENVIRONMENT.ITERATOR_OPTIONS.MAX_SCENE_REPEAT_STEPS = (
             -1
-        )   # TODO：括号换行是多余的
+            )
         # 3. 如果需要生成视频，添加额外的测量项（如地图、碰撞）
         if len(config.VIDEO_OPTION) > 0:
-            config.defrost()    # TODO：这行是多余的，因为上面已经解冻了
+            config.defrost()
             config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP_VLNCE")
             config.TASK_CONFIG.TASK.MEASUREMENTS.append("COLLISIONS")
         # 4. 重新冻结配置
@@ -290,9 +290,9 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     print("Overwriting previous results...")
                 
         # 6. 构建评估环境
-        #    - 使用配置和环境类创建环境
-        #    - auto_reset_done=False: 环境不会在episode结束时自动重置，由代码手动控制
-        #    - episodes_allowed=self.traj: 只评估指定的episode（通过collect_val_traj获取）
+        #       使用配置和环境类创建环境
+        #       auto_reset_done=False: 环境不会在episode结束时自动重置，由代码手动控制
+        #       episodes_allowed=self.traj: 只评估指定的episode（通过collect_val_traj获取）
         envs = construct_envs(
             config, get_env_class(config.ENV_NAME),
             auto_reset_done=False,
@@ -312,8 +312,8 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         )
 
         # 9. 初始化策略网络和航点预测器
-        #    - load_from_ckpt=False: 不从检查点加载（因为是零样本推理）
-        #    - observation_space, action_space: 用于构建网络
+        #       load_from_ckpt=False: 不从检查点加载（因为是零样本推理）
+        #       observation_space, action_space: 用于构建网络
         self._initialize_policy(
             config,
             load_from_ckpt=False,
@@ -365,7 +365,6 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         start_time = time.time()
 
         # 18. 设置日志记录器
-        # set up the logger
         log_file = "./navigator_log.log"
         if os.path.exists(log_file): os.remove(log_file)    # 清除旧日志
         import logging
@@ -397,6 +396,12 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
         current_step = 0
         error_number = 0
 
+        # 设置快照模式，可以通过配置控制（basic or detailed）
+        snapshot_mode = getattr(config, 'SNAPSHOT_MODE', 'basic')  # 默认为basic模式
+        navigator.set_snapshot_mode(snapshot_mode)
+        nav_logger.info(f"Snapshot mode set to: {snapshot_mode}")
+
+        # TODO: 定位书签 - 主评估循环
         # 21. 主评估循环：只要还有环境在运行且未达到评估数量上限
         while envs.num_envs > 0 and len(stats_episodes) < episodes_to_eval:
             current_episodes = envs.current_episodes()
@@ -565,6 +570,39 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     else:
                         nav_logger.info(f"Subtask {current_subtask} NOT completed. Will continue.")
 
+                    # --- 快照机制 ---
+                    # 在获取新观测后，创建并保存快照
+                    try:
+                        nav_logger.info("========== Creating Snapshot ==========")
+                        
+                        # 获取场景图上下文（用于detailed模式）
+                        scene_graph_context = "No scene graph context"
+                        if navigator.scene_graph and navigator.current_trajectory_node:
+                            try:
+                                current_agent_wp_id = navigator.current_trajectory_node.viewpoint_id
+                                current_wp_node_id_sg = f"wp_{current_agent_wp_id}"
+                                current_subgraph = navigator.scene_graph.get_subgraph_around_node(current_wp_node_id_sg, radius=2)
+                                scene_graph_context = current_subgraph.serialize_to_text(detail_level="concise")
+                            except Exception as e:
+                                nav_logger.warning(f"Could not get scene graph context for snapshot: {e}")
+                        
+                        # 创建快照
+                        current_snapshot = navigator.create_snapshot(
+                            step_id=current_step,
+                            viewpoint_id=next_vp,  # 使用选择的航点
+                            current_subtask=current_subtask,
+                            action_executed=f"Move to viewpoint {next_vp}",
+                            scene_graph_context=scene_graph_context
+                        )
+                        
+                        # 保存快照
+                        navigator.save_snapshot(current_snapshot)
+                        nav_logger.info(f"Created and saved snapshot: {current_snapshot}")
+                        
+                    except Exception as e:
+                        nav_logger.error(f"Error creating snapshot: {e}")
+
+
 
                     # 22.4 获取新观测，并重置错误计数
                     observations, _, dones, infos = [list(x) for x in zip(*outputs)]
@@ -682,7 +720,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
                     envs_to_pause,
                     envs,
                     not_done_masks,
-                    headings,   # TODO：这里传入headings但返回值覆盖了它，可能是笔误，应该是prev_actions？
+                    headings,                                                   # TODO：这里传入headings但返回值覆盖了它，可能是笔误，应该是prev_actions？
                     batch,
                     rgb_frames,
                 )
