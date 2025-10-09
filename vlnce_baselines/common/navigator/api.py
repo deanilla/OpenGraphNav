@@ -1,5 +1,6 @@
 '''vlnce_baselines/common/navigator/api.py'''
 
+import re
 import time
 from openai import OpenAI
 import torch
@@ -32,6 +33,11 @@ from vlnce_baselines.common.graph.scene_graph import *
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
+
+from PIL import Image
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+import requests
+from io import BytesIO
 
 
 @dataclass
@@ -190,141 +196,177 @@ class llmClient:
     
 class spatialClient:
     """
-    场景感知客户端类，负责加载和调用 Recognize Anything Model (RAM) 和 SpatialBot。
-    这是 Open-Nav 中 "Scene Perception" 部分的核心实现。
+    场景感知客户端类，负责加载和调用 VLM。
+    Open-Nav 中 "Scene Perception" 部分的核心实现。
     """
     def __init__(self, device):
         self.device = device
-        self.ram_path = "./recognize_anything/pretrained/ram_swin_large_14m.pth"
-        self.spatialbot_path = "./SpatialBot3B"
-        view_record_path = "cache_files/view_cache.json"    # FIXME：未使用
-        try:
-            self.spatialbot_model = AutoModelForCausalLM.from_pretrained(
-                self.spatialbot_path,
-                torch_dtype=torch.float16, # float32 for cpu
-                device_map='auto',
-                trust_remote_code=True)
-            self.spatialbot_tokenizer = AutoTokenizer.from_pretrained(
-                self.spatialbot_path,
-                trust_remote_code=True)
-            
-            self.ram_transform = get_transform(image_size=224) 
-            self.ram_model = ram(pretrained=self.ram_path, image_size=224, vit='swin_l').eval().to(self.device)
-        except Exception as e:
-            print(f"Error in loading RAM or SpatialBot: {e}")
-            
-    def ram_img_tagging(self, image):
+        self.tag_model_id = "remyxai/SpaceOm"
+        self.spacial_model_id = "remyxai/SpaceThinker-Qwen2.5VL-3B"
+        view_record_path = "cache_files/view_cache.json"    # FIXME
+
+    def vlm_infer(
+            self, image, prompt, 
+            system_message = (
+                "You are VL-Thinking 🤔, a helpful assistant with excellent reasoning ability. "
+                "You should first think about the reasoning process and then provide the answer. "
+                "Use <think>...</think> and <answer>...</answer> tags."
+            ), 
+            num_output=1
+        ):
+
+        # Load model and processor
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self.model_id, device_map="auto", torch_dtype=torch.bfloat16
+        )
+        processor = AutoProcessor.from_pretrained(self.model_id)
+
+        # Preprocess image
+        if image.width > 512:
+            ratio = image.height / image.width
+            image = image.resize((512, int(512 * ratio)), Image.Resampling.LANCZOS)
+
+        # Format input
+        chat = [
+            {"role": "system", "content": [{"type": "text", "text": system_message}]},
+            {"role": "user", "content": [{"type": "image", "image": image},
+                                        {"type": "text", "text": prompt}]}
+        ]
+        text_input = processor.apply_chat_template(chat, tokenize=False,
+                                                        add_generation_prompt=True)
+
+        # Tokenize
+        inputs = processor(text=[text_input], images=[image],
+                                            return_tensors="pt").to("cuda")
+
+        # Generate response
+        generated_ids = model.generate(**inputs, max_new_tokens=1024)
+        output = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+        return output
+    
+    def spacial_vlm_infer(
+            self, image1, image2, prompt, 
+            system_message = (
+                "You are VL-Thinking 🤔, a helpful assistant with excellent reasoning ability. "
+                "You should first think about the reasoning process and then provide the answer. "
+                "Use <think>...</think> and <answer>...</answer> tags."
+            ), 
+            num_output=1
+        ):
         """
-        使用 RAM 模型对单张图像进行标签预测（物体识别）。
+        使用支持双图像输入的VLM进行推理
+        
+        Args:
+            image1: 第一张图像（如RGB图像）
+            image2: 第二张图像（如深度图）
+            prompt: 用户提示
+            system_message: 系统提示
+            num_output: 输出数量
+        """
+        # Load model and processor
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self.model_id, device_map="auto", torch_dtype=torch.bfloat16
+        )
+        processor = AutoProcessor.from_pretrained(self.model_id)
+
+        # Preprocess images
+        for img in [image1, image2]:
+            if img.width > 512:
+                ratio = img.height / img.width
+                img = img.resize((512, int(512 * ratio)), Image.Resampling.LANCZOS)
+
+        # Format input - include both images
+        chat = [
+            {"role": "system", "content": [{"type": "text", "text": system_message}]},
+            {"role": "user", "content": [
+                {"type": "image", "image": image1},
+                {"type": "image", "image": image2},
+                {"type": "text", "text": prompt}
+            ]}
+        ]
+        text_input = processor.apply_chat_template(chat, tokenize=False,
+                                                        add_generation_prompt=True)
+
+        # Tokenize - pass both images
+        inputs = processor(text=[text_input], 
+                        images=[image1, image2],
+                        return_tensors="pt").to("cuda")
+
+        # Generate response
+        generated_ids = model.generate(**inputs, max_new_tokens=1024)
+        output = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+        return output
+            
+    def img_tagging(self, image):
+        """
+        使用 VLM 对单张图像进行标签预测（物体识别）。
 
         Args:
             image (PIL.Image): 输入的 RGB 图像。
 
         Returns:
-            str: 由 RAM 模型识别出的物体标签，以逗号分隔的字符串。
+            str: 由 VLM 识别出的物体标签，以逗号分隔的字符串。
                  例如: "chair, table, window, lamp"
         """
-        ram_img = self.ram_transform(image).unsqueeze(0).to(self.device)
-        img_tags = inference_ram(ram_img, self.ram_model)[0]
+        img_tagging_prompt = "What objects can you see in the image?"
+        img_tagging_system_prompt = (
+            "You are VL-Thinking 🤔, a helpful object detection agent with excellent reasoning ability. "
+            "You should first think about the reasoning process and then provide the answer. "
+            "Use <think>...</think> and <answer>...</answer> tags."
+            "The answer in <answer>...</answer> tags must be strings of object names seperated by comma."
+        )
+        output = self.vlm_infer(image, img_tagging_prompt, img_tagging_system_prompt)
+        
+        # 从字符串中提取 <answer>...</answer> 标签中的内容
+        answer_match = re.search(r'<answer>(.*?)</answer>', output, re.DOTALL)
+        img_tags = answer_match.group(1).strip() if answer_match else output
+
         return img_tags
     
-    def spatialbot_description(self, image_dict, prompt, force_json=True):
+    def spatial_description(self, image_dict, prompt):
         """
         使用 SpatialBot 模型生成对图像的描述或结构化信息。
 
         Args:
             image_dict (dict): 包含 'rgb' 和 'depth' 图像的字典。
             prompt (str): 给 SpatialBot 的指令。
-            force_json (bool, optional): 是否强制模型输出 JSON 格式。默认为 False。
 
         Returns:
-            str or dict: SpatialBot 生成的文本描述，或解析后的 JSON 字典。
+            str: SpatialBot 生成的文本描述。
         """
-        # --- 根据 force_json 调整 Prompt ---
-        if force_json:
-            # 强制 JSON 输出的提示词
-            json_instruction = (
-                "Your response must be a valid JSON object. "
-                "Do not include any other text, code blocks, or markdown. "
-                "Just output the raw JSON."
-            )
-            prompt = f"{prompt}\n{json_instruction}"
-        # 1. 构造输入给 SpatialBot 的文本提示
-        offset_bos = 0
-        # TODO：这段text是干啥的？
-        text = f"A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. USER: <image 1>\n<image 2>\n{prompt} ASSISTANT:"
-        
-        # 2. 对文本进行分词处理
-        text_chunks = [self.spatialbot_tokenizer(chunk).input_ids for chunk in text.split('<image 1>\n<image 2>\n')]
-        
-        # 3. 构造最终的输入 ID 张量
-        input_ids = torch.tensor(text_chunks[0] + [-201] + [-202] + text_chunks[1][offset_bos:], dtype=torch.long).unsqueeze(0).to(self.device)
-        
-        # 4. 准备图像输入
+       
+        # 提取图像输入
         image1 = image_dict['rgb']
         image2 = image_dict['depth']
 
-        # 5. 处理深度图格式
-        #    检查深度图的通道数
         channels = len(image2.getbands())
         if channels == 1:   # 如果是单通道深度图
             # 将单通道深度图转换为三通道 RGB 格式
-            # 这是一种常见的可视化深度图的方法
             img = np.array(image2)
             height, width = img.shape
             three_channel_array = np.zeros((height, width, 3), dtype=np.uint8)
             three_channel_array[:, :, 0] = (img // 1024) * 4    # R
-            three_channel_array[:, :, 1] = (img // 32) * 8  # G
-            three_channel_array[:, :, 2] = (img % 32) * 8   # B
-            image2 = Image.fromarray(three_channel_array, 'RGB')    # FIXME：Open-Nav原版就没有导入，不知道为什么
-        image_tensor = self.spatialbot_model.process_images([image1,image2], self.spatialbot_model.config).to(dtype=self.spatialbot_model.dtype, device=self.device)
-        
-        # 7. 确保视觉塔（Vision Tower）在 GPU 上
-        self.spatialbot_model.get_vision_tower().to('cuda')
+            three_channel_array[:, :, 1] = (img // 32) * 8      # G
+            three_channel_array[:, :, 2] = (img % 32) * 8       # B
+            image2 = Image.fromarray(three_channel_array, 'RGB')
 
-        # 8. 调用模型的 generate 方法生成文本
-        # --- 为 JSON 输出调整生成参数 ---
-        generate_kwargs = {
-            "input_ids": input_ids,
-            "images": image_tensor,
-            "max_new_tokens": 300 if force_json else 200, # JSON 可能需要更多 token
-            "use_cache": True,
-            "repetition_penalty": 1.0
-        }
-        # 如果强制 JSON，可以尝试降低 temperature 以获得更确定的输出
-        if force_json:
-            generate_kwargs["temperature"] = 0.0
-            generate_kwargs["do_sample"] = False
-            
-        output_ids = self.spatialbot_model.generate(**generate_kwargs)[0]
-
-        # 9. 解码生成的 token ID 为文本
-        response_text = self.spatialbot_tokenizer.decode(output_ids[input_ids.shape[1]:], skip_special_tokens=True).strip()
+        spatial_description_prompt = prompt
+        spatial_description_system_prompt = (
+            "You are VL-Thinking 🤔, a helpful spacial scene observation agent with excellent reasoning ability. "
+            "You should first think about the reasoning process and then provide the answer. "
+            "Use <think>...</think> and <answer>...</answer> tags."
+        )
+        output = self.spacial_vlm_infer(image1, image2, spatial_description_prompt, spatial_description_system_prompt)
         
-        # --- 修改点3: 尝试解析 JSON ---
-        if force_json:
-            try:
-                # 简单清理，尝试提取可能被包裹的 ```json ... ``` 或其他符号
-                import json
-                cleaned_text = response_text.strip()
-                if cleaned_text.startswith("```json"):
-                    cleaned_text = cleaned_text[7:]
-                if cleaned_text.endswith("```"):
-                    cleaned_text = cleaned_text[:-3]
-                cleaned_text = cleaned_text.strip()
+        # 从字符串中提取 <answer>...</answer> 标签中的内容
+        answer_match = re.search(r'<answer>(.*?)</answer>', output, re.DOTALL)
+        spatial_description = answer_match.group(1).strip() if answer_match else output
                 
-                parsed_json = json.loads(cleaned_text)
-                print(f"SpatialBot returned valid JSON: {parsed_json}") # 调试信息
-                return parsed_json
-            except (json.JSONDecodeError, Exception) as e:
-                print(f"Warning: force_json=True, but failed to parse SpatialBot output as JSON: {e}")
-                print(f"Raw output was: {response_text}")
-                # 解析失败则返回原始文本
-                return response_text 
-        else:
-            return response_text
+        return spatial_description
 
-    # HACK：deprecated
+
     def observe_view(self, logger, current_step, direction_idx, direction_image):
         """
         [Scene Perception 的核心实现]
@@ -339,32 +381,22 @@ class spatialClient:
 
         Returns:
             str: 格式化后的完整观察结果字符串，包含物体标签和空间描述。
-                 例如: "Direction 2 Direction Viewpoint ID: 2 in Step ID: 1 Elevation: Eye Level Scene Description: There is a chair about 2 meters away... Scene Objects: chair, table, window;"
         """
-        # 1. [调用 RAM] 获取图像中的物体标签
-        #    调用 ram_img_tagging 方法处理 RGB 图像
-        img_tags = self.ram_img_tagging(direction_image['rgb'])
 
-        # 2. [调用 SpatialBot] 获取详细的空间描述
-        #    定义给 SpatialBot 的提示词，要求它描述物体和距离
-
-        # TODO：修改prompt
+        img_tags = self.img_tagging(direction_image['rgb'])
 
         spatial_scene_description_prompt = "What objects are in the image, and how far are these objects from the camera, calculate the result in meter."
-        #    调用 spatialbot_description 方法处理 RGB 和深度图
-        spatial_scene_description = self.spatialbot_description(direction_image, spatial_scene_description_prompt)
+        spatial_scene_description = self.spatial_description(direction_image, spatial_scene_description_prompt)
 
-        # TODO：我觉得其实根本不需要这个RAM来识别物体呀，spacialbot一样得去识别。要是两个识别的不一样怎么办。
-
-        # 3. [融合信息] 将 RAM 和 SpatialBot 的输出融合成一个描述
+        # 将以上两个输出融合成一个描述
         view_observation = f"Scene Description: {spatial_scene_description} Scene Objects: {img_tags}; "
 
-        # 4. [格式化输出] 添加方向、步数、视角高度等元信息
+        # 添加方向、步数、视角高度等元信息
         observe_result = f"Direction {direction_idx} Direction Viewpoint ID: {direction_idx} in Step ID: {current_step} Elevation: Eye Level "  + view_observation
         
         return observe_result
         
-
+    # 新增函數
     def update_scene_graph_from_observation(
         self, 
         logger, 
@@ -398,8 +430,7 @@ class spatialClient:
         # 1. 确保当前航点节点存在于图中（如果图是空的或不包含该节点）
         # 注意：ID 格式需要与 initialize_scene_graph 中保持一致
         current_wp_node_id = f"wp_{current_waypoint_id}"
-        # 我们不直接创建节点，而是返回它，让调用者决定是否需要添加
-        # 如果子图已提供，检查它是否已存在
+        # 不直接创建节点，而是返回它，让调用者决定是否需要添加。如果子图已提供，检查它是否已存在
         wp_node_exists_in_subgraph = False
         if current_subgraph:
             wp_node_exists_in_subgraph = current_subgraph.graph.has_node(current_wp_node_id)
@@ -418,16 +449,7 @@ class spatialClient:
         else:
             logger.info(f"{log_prefix} Current waypoint node '{current_wp_node_id}' found in subgraph.")
 
-        # 2. 调用 RAM 获取基础物体标签
-        try:
-            img_tags_str = self.ram_img_tagging(direction_image['rgb'])
-            img_tags_list = [tag.strip() for tag in img_tags_str.split(',') if tag.strip()]
-            logger.info(f"{log_prefix} RAM detected objects: {img_tags_list}")
-        except Exception as e:
-            logger.error(f"{log_prefix} Error calling RAM: {e}")
-            img_tags_list = []
-
-        # 3. 调用 SpatialBot 获取结构化的物体及其关系
+        # TODO: 调用 VLM 获取结构化的物体及其关系
         # TODO：优化此prompt
         spatial_scene_prompt = (
             "Analyze the image from an agent's viewpoint inside a room. "
@@ -457,28 +479,27 @@ class spatialClient:
         spatial_scene_prompt_with_wp = f"{spatial_scene_prompt}\n\nThe agent's current viewpoint ID is: {current_wp_node_id}"
 
         try:
-            logger.info(f"{log_prefix} Calling SpatialBot for structured objects and relationships...")
-            # 调用 SpatialBot 并强制尝试获取 JSON 格式输出
-            spatialbot_output = self.spatialbot_description(
+            logger.info(f"{log_prefix} Calling VLM for structured objects and relationships...")
+            # 调用 VLM 获取输出
+            vlm_output = self.spatial_description(
                 direction_image, 
                 spatial_scene_prompt_with_wp, 
-                force_json=True
             )
-            logger.info(f"{log_prefix} SpatialBot output type: {type(spatialbot_output)}")
-            logger.debug(f"{log_prefix} SpatialBot raw output: {spatialbot_output}")
+            logger.info(f"{log_prefix} VLM output type: {type(vlm_output)}")
+            logger.debug(f"{log_prefix} VLM raw output: {vlm_output}")
         except Exception as e:
-            logger.error(f"{log_prefix} Error calling SpatialBot: {e}")
-            spatialbot_output = None
+            logger.error(f"{log_prefix} Error calling VLM: {e}")
+            vlm_output = None
 
-        # 4. 处理 SpatialBot 的结构化输出
+        # 4. 处理 VLM 的结构化输出
         detected_objects = []
         detected_relationships = []
-        if isinstance(spatialbot_output, dict):
-            detected_objects = spatialbot_output.get("objects", [])
-            detected_relationships = spatialbot_output.get("relationships", [])
-            logger.info(f"{log_prefix} SpatialBot found {len(detected_objects)} objects and {len(detected_relationships)} relationships.")
+        if isinstance(vlm_output, dict):
+            detected_objects = vlm_output.get("objects", [])
+            detected_relationships = vlm_output.get("relationships", [])
+            logger.info(f"{log_prefix} VLM found {len(detected_objects)} objects and {len(detected_relationships)} relationships.")
         else:
-            logger.warning(f"{log_prefix} SpatialBot did not return a valid dict. Output was: {spatialbot_output}")
+            logger.warning(f"{log_prefix} VLM did not return a valid dict. Output was: {vlm_output}")
 
         # 5. 将检测到的对象转换为 SceneNode
         # 使用一个字典来跟踪新创建的节点 ID，避免重复处理
@@ -499,8 +520,7 @@ class spatialClient:
                     type=NodeType.OBJECT,
                     attributes={
                         'category': obj_name,
-                        'detected_by': 'SpatialBot',
-                        # 可以添加更多属性，如果 SpatialBot 提供了
+                        'detected_by': 'VLM',
                     }
                 )
                 new_nodes.append(obj_node)

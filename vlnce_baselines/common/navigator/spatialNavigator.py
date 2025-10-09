@@ -74,8 +74,6 @@ class Open_Nav():
     # ===== Visual Perception =====
     # =============================
 
-    # TODO：使用图来表征环境
-    # deprecated
     def observe_environment(self, logger, current_step, images_list):
         '''
         返回: 方法最终返回两个结果：
@@ -187,8 +185,6 @@ class Open_Nav():
             logger.warning(f"{log_prefix} SceneGraph is not initialized. Initializing with current waypoint.")
             # 如果尚未初始化（例如，在第一帧），则进行初始化
             self.initialize_scene_graph(current_waypoint_id, direction_image, logger)
-            # 注意：initialize_scene_graph 只添加了航点节点，我们仍需要更新该航点的观察信息。
-            # 因此，代码会继续执行下去，调用 spatialClient 来获取观察并更新。
 
         logger.info(f"{log_prefix} Updating SceneGraph for waypoint {current_waypoint_id}.")
 

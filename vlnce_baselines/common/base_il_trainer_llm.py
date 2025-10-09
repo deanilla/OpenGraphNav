@@ -486,7 +486,7 @@ class BaseVLNCETrainerLLM(BaseILTrainer):
             # 21.6 构建航点图像字典（供后续LLM推理使用）
             images_dict, radius_dict, distance_dict = self.construct_image_dicts(batch_distances[-1], batch_angles, images_list)
 
-            # 21.7 调用 Open_Nav 进行环境观察（可能涉及外部模型如RAM/SpatialBot）
+            # 21.7 调用 Open_Nav 进行环境观察
             nav_logger.info("========== Get Observation ==========")
             observation, observe_dict = navigator.observe_environment(nav_logger, current_step, images_dict)
             
