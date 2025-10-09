@@ -251,7 +251,7 @@ class spatialClient:
             prompt = f"{prompt}\n{json_instruction}"
         # 1. 构造输入给 SpatialBot 的文本提示
         offset_bos = 0
-        # TODO：这段text是干啥的？
+        # system prompt
         text = f"A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. USER: <image 1>\n<image 2>\n{prompt} ASSISTANT:"
         
         # 2. 对文本进行分词处理
@@ -276,7 +276,7 @@ class spatialClient:
             three_channel_array[:, :, 0] = (img // 1024) * 4    # R
             three_channel_array[:, :, 1] = (img // 32) * 8  # G
             three_channel_array[:, :, 2] = (img % 32) * 8   # B
-            image2 = Image.fromarray(three_channel_array, 'RGB')    # FIXME：Open-Nav原版就没有导入，不知道为什么
+            image2 = Image.fromarray(three_channel_array, 'RGB')    # FIXME
         image_tensor = self.spatialbot_model.process_images([image1,image2], self.spatialbot_model.config).to(dtype=self.spatialbot_model.dtype, device=self.device)
         
         # 7. 确保视觉塔（Vision Tower）在 GPU 上
@@ -324,7 +324,7 @@ class spatialClient:
         else:
             return response_text
 
-    # HACK：deprecated
+
     def observe_view(self, logger, current_step, direction_idx, direction_image):
         """
         [Scene Perception 的核心实现]
@@ -339,8 +339,8 @@ class spatialClient:
 
         Returns:
             str: 格式化后的完整观察结果字符串，包含物体标签和空间描述。
-                 例如: "Direction 2 Direction Viewpoint ID: 2 in Step ID: 1 Elevation: Eye Level Scene Description: There is a chair about 2 meters away... Scene Objects: chair, table, window;"
         """
+
         # 1. [调用 RAM] 获取图像中的物体标签
         #    调用 ram_img_tagging 方法处理 RGB 图像
         img_tags = self.ram_img_tagging(direction_image['rgb'])
@@ -348,13 +348,9 @@ class spatialClient:
         # 2. [调用 SpatialBot] 获取详细的空间描述
         #    定义给 SpatialBot 的提示词，要求它描述物体和距离
 
-        # TODO：修改prompt
-
         spatial_scene_description_prompt = "What objects are in the image, and how far are these objects from the camera, calculate the result in meter."
         #    调用 spatialbot_description 方法处理 RGB 和深度图
         spatial_scene_description = self.spatialbot_description(direction_image, spatial_scene_description_prompt)
-
-        # TODO：我觉得其实根本不需要这个RAM来识别物体呀，spacialbot一样得去识别。要是两个识别的不一样怎么办。
 
         # 3. [融合信息] 将 RAM 和 SpatialBot 的输出融合成一个描述
         view_observation = f"Scene Description: {spatial_scene_description} Scene Objects: {img_tags}; "

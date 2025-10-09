@@ -74,8 +74,6 @@ class Open_Nav():
     # ===== Visual Perception =====
     # =============================
 
-    # TODO：使用图来表征环境
-    # deprecated
     def observe_environment(self, logger, current_step, images_list):
         '''
         返回: 方法最终返回两个结果：
